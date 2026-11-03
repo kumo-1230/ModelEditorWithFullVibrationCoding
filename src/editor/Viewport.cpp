@@ -172,7 +172,7 @@ void Editor::DrawGizmo(const ImVec2& pos, const ImVec2& size) {
             if (m_gizmoOp == 2) {
                 // ルートモーションを持つノード等はオブジェクトノード (親) を同じ倍率で拡大する
                 int st = ScaleTargetOf(idx, true);
-                if (st >= 0 && scaled.insert(st).second) ScaleNodeKeepXZ(st, mul);
+                if (st >= 0 && scaled.insert(st).second) Ops::OffsetNodeTRS(m_scene, st, glm::vec3(0.0f), glm::quat(1, 0, 0, 0), mul);
                 return;
             }
             Ops::OffsetNodeTRS(m_scene, idx, dT, dR, mul);

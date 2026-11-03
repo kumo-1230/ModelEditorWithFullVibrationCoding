@@ -143,11 +143,6 @@ struct Node {
     bool visible = true;
     bool objectRoot = false;    // オブジェクト (エンジンの GameObject 相当)。サイズ変更はこのノードのスケールで行う
     bool objectWrapper = false; // エディターが自動で作った親ノード (焼き込み書き出し時に取り除ける)
-    // サイズ変更で XZ がずれないよう、最初にサイズを変えたときの足元の中心 (XZ) を覚えておく。
-    // resizeHomeT は直前のサイズ変更後の移動値で、これと違えば (ユーザーが動かした) 位置を記録し直す
-    bool hasResizeHome = false;
-    glm::vec2 resizeHomeXZ{ 0.0f };
-    glm::vec3 resizeHomeT{ 0.0f };
 
     glm::mat4 LocalMatrix() const;
     void SetLocalMatrix(const glm::mat4& m);

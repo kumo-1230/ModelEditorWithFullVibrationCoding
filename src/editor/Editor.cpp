@@ -1207,19 +1207,30 @@ void Editor::SmokeTestStep() {
                     ++m_smokeErrors;
                 }
             }
-            // 倍率指定 (x3) で高さが 3 倍になり、足元の中心が動かないか
+            // 倍率指定 (x3) で高さが 3 倍になり、オブジェクトの原点が動かないか
             {
                 glm::vec3 m0, x0, m1, x1;
-                ComputeTargetsBounds(FitTargetsForSelection(), m0, x0);
-                ScaleTargetsToSize(FitTargetsForSelection(), 1, 0.0f, nullptr, false, false, "smoke factor", 3.0f);
-                ComputeTargetsBounds(FitTargetsForSelection(), m1, x1);
+                auto tg3 = FitTargetsForSelection();
+                ComputeTargetsBounds(tg3, m0, x0);
+                std::vector<glm::vec3> o0;
+                for (int t : tg3) o0.push_back(glm::vec3(m_scene.ComputeWorldMatrices()[t][3]));
+                ScaleTargetsToSize(tg3, 1, 0.0f, nullptr, false, false, "smoke factor", 3.0f);
+                ComputeTargetsBounds(tg3, m1, x1);
+                float originMove = 0.0f;
+                auto w3 = m_scene.ComputeWorldMatrices();
+                for (size_t i = 0; i < tg3.size() && i < o0.size(); ++i) {
+                    int o = Ops::FindObjectNode(m_scene, tg3[i]);
+                    int t = o >= 0 ? o : tg3[i];
+                    // 自動で作られたオブジェクトノードはワールド原点に置かれる
+                    glm::vec3 before = t == tg3[i] ? o0[i] : glm::vec3(0.0f);
+                    originMove = std::max(originMove, glm::length(glm::vec3(w3[t][3]) - before));
+                }
                 m_undo.Undo(m_scene);
                 ValidateSelection();
                 UpdateWorld();
                 float r = (x0.y - m0.y) > 1e-9f ? (x1.y - m1.y) / (x0.y - m0.y) : 0.0f;
-                float footMove = glm::length(glm::vec3((m1.x + x1.x) * 0.5f, m1.y, (m1.z + x1.z) * 0.5f) - glm::vec3((m0.x + x0.x) * 0.5f, m0.y, (m0.z + x0.z) * 0.5f));
-                LOG_INFO("[smoke] 倍率 x3: 高さの比 %.4f, 足元の移動 %.3g", r, footMove);
-                if (std::abs(r - 3.0f) > 1e-3f || footMove > h0 * 1e-4f) { LOG_ERROR("[smoke] 倍率指定の結果が不正です"); ++m_smokeErrors; }
+                LOG_INFO("[smoke] 倍率 x3: 高さの比 %.4f, 原点の移動 %.3g", r, originMove);
+                if (std::abs(r - 3.0f) > 1e-3f || originMove > 1e-5f) { LOG_ERROR("[smoke] 倍率指定の結果が不正です"); ++m_smokeErrors; }
             }
             float ratio = (b0.y - a0.y) > 1e-9f ? (b.y - a.y) / (b0.y - a0.y) : 0.0f;
             LOG_INFO("[smoke] アニメ付き (t=%.2f): 倍率 %.4f", tmid, ratio);
@@ -1258,41 +1269,31 @@ void Editor::SmokeTestStep() {
         ScaleTargetsToSize(FitTargetsForSelection(), 1, 1.0f, &anchor, true, false, "smoke fit neg");
         ComputeTargetsBounds({ cube }, mn, mx);
         if (std::abs(mx.y - 0.5f) > 1e-3f || std::abs((mx.y - mn.y) - 1.0f) > 1e-3f) { LOG_ERROR("[smoke] マイナス定規のフィットが不正です"); ++m_smokeErrors; }
-        // サイズを変えても XZ (足元の中心) が一番元の位置に残るか。ピボット (原点) とモデルの中心が離れたオブジェクトで確認
+        // サイズを変えてもオブジェクトの原点 (ピボット) が動かないか。原点とメッシュの中心が離れたオブジェクトで確認
         {
-            Checkpoint("smoke xz");
-            int g = m_scene.AddNode("SmokeXZ", -1);
+            Checkpoint("smoke origin");
+            int g = m_scene.AddNode("SmokeOrigin", -1);
             m_scene.nodes[g].objectRoot = true;
+            m_scene.nodes[g].translation = glm::vec3(1.0f, 0.0f, -2.0f);
             int cb = Ops::CreatePrimitive(m_scene, Ops::Prim_Cube, 1.0f, g);
-            m_scene.nodes[cb].translation = glm::vec3(3.0f, 0.5f, 1.0f);
+            m_scene.nodes[cb].translation = glm::vec3(3.0f, 0.7f, 1.0f);
             MarkChanged();
-            auto centerXZ = [&](glm::vec2 expect, const char* what) {
-                glm::vec3 a, b;
-                ComputeTargetsBounds({ g }, a, b);
-                glm::vec2 cxz((a.x + b.x) * 0.5f, (a.z + b.z) * 0.5f);
-                float e = glm::length(cxz - expect);
-                LOG_INFO("[smoke] XZ 保持 (%s): 中心 %.4f, %.4f (期待 %.4f, %.4f) スケール %.4g", what, cxz.x, cxz.y, expect.x, expect.y, m_scene.nodes[g].scale.x);
-                if (e > 1e-4f) { LOG_ERROR("[smoke] サイズ変更で XZ がずれました (%s)", what); ++m_smokeErrors; }
+            auto origin = [&](glm::vec3 expect, const char* what) {
+                glm::vec3 o = m_scene.nodes[g].translation;
+                LOG_INFO("[smoke] 原点の保持 (%s): %.4f, %.4f, %.4f スケール %.4g", what, o.x, o.y, o.z, m_scene.nodes[g].scale.x);
+                if (glm::length(o - expect) > 1e-5f) { LOG_ERROR("[smoke] サイズ変更で原点がずれました (%s)", what); ++m_smokeErrors; }
             };
-            ScaleNodeKeepXZ(g, glm::vec3(2.0f));
-            centerXZ({ 3, 1 }, "インスペクター x2");
-            ScaleNodeKeepXZ(g, glm::vec3(0.37f));
-            ScaleNodeKeepXZ(g, glm::vec3(1.9f));
-            centerXZ({ 3, 1 }, "インスペクター x0.37 → x1.9");
-            ScaleTargetsToSize({ g }, 1, 0.0f, nullptr, false, false, "smoke xz factor", 3.0f);
-            centerXZ({ 3, 1 }, "倍率 x3");
-            glm::vec3 anchor(0.0f, 0.25f, 0.0f);
-            ScaleTargetsToSize({ g }, 1, 0.8f, &anchor, false, false, "smoke xz ruler");
-            centerXZ({ 3, 1 }, "定規 (XZ は合わせない)");
-            m_scene.nodes[g].translation.x += 1.0f; // ユーザーが動かした → そこが新しい元の位置
-            MarkChanged();
-            ScaleNodeKeepXZ(g, glm::vec3(1.5f));
-            centerXZ({ 4, 1 }, "移動後に x1.5");
-            anchor = glm::vec3(-2.0f, 0.0f, 5.0f);
-            ScaleTargetsToSize({ g }, 1, 1.2f, &anchor, false, true, "smoke xz ruler xz");
-            centerXZ({ -2, 5 }, "定規に XZ を合わせる");
-            ScaleTargetsToSize({ g }, 1, 0.0f, nullptr, false, false, "smoke xz factor 2", 0.5f);
-            centerXZ({ -2, 5 }, "定規に合わせた後 x0.5");
+            const glm::vec3 home(1.0f, 0.0f, -2.0f);
+            ScaleTargetsToSize({ g }, 1, 0.0f, nullptr, false, false, "smoke origin factor", 3.0f);
+            origin(home, "倍率 x3");
+            ScaleTargetsToSize({ g }, 1, 0.0f, nullptr, false, false, "smoke origin factor 2", 0.37f);
+            ScaleTargetsToSize({ g }, 1, 0.0f, nullptr, false, false, "smoke origin factor 3", 1.9f);
+            origin(home, "倍率 x0.37 → x1.9");
+            ScaleTargetsToSize({ g }, 1, 2.4f, nullptr, false, false, "smoke origin size");
+            origin(home, "サイズ指定");
+            glm::vec3 a, b;
+            ComputeTargetsBounds({ g }, a, b);
+            if (std::abs((b.y - a.y) - 2.4f) > 1e-4f) { LOG_ERROR("[smoke] サイズ指定の高さが不正です (%.4f)", b.y - a.y); ++m_smokeErrors; }
         }
         // 選択なし = 全オブジェクトを高さ 1.7 m に
         ClearSelection();
@@ -1387,49 +1388,6 @@ int Editor::ScaleTargetOf(int node, bool create) {
         if (Ops::NodeHasAnimation(m_scene, p)) return node;
     }
     return create ? Ops::EnsureObjectNode(m_scene, node) : Ops::FindObjectNode(m_scene, node);
-}
-
-bool Editor::ResizeHomeXZ(int node, glm::vec2& home) {
-    if (node < 0 || node >= (int)m_scene.nodes.size()) return false;
-    glm::vec3 mn, mx;
-    if (!ComputeTargetsBounds({ node }, mn, mx)) return false;
-    const Node& n = m_scene.nodes[node];
-    // 前回のサイズ変更の後に動かされていなければ、最初に記録した位置を使う (何度変えても一番元に戻る)
-    float tol = 1e-5f * std::max(1.0f, glm::length(n.translation));
-    if (n.hasResizeHome && glm::length(n.translation - n.resizeHomeT) <= tol) home = n.resizeHomeXZ;
-    else home = glm::vec2((mn.x + mx.x) * 0.5f, (mn.z + mx.z) * 0.5f);
-    return true;
-}
-
-void Editor::RestoreResizeHomeXZ(int node, const glm::vec2& home) {
-    glm::vec3 mn, mx;
-    if (!ComputeTargetsBounds({ node }, mn, mx)) return;
-    glm::vec3 d(home.x - (mn.x + mx.x) * 0.5f, 0.0f, home.y - (mn.z + mx.z) * 0.5f);
-    if (glm::length(d) > 0.0f) {
-        auto world = m_scene.ComputeWorldMatrices();
-        const Node& n = m_scene.nodes[node];
-        glm::mat3 pw = n.parent >= 0 ? glm::mat3(world[n.parent]) : glm::mat3(1.0f);
-        Ops::OffsetNodeTRS(m_scene, node, glm::inverse(pw) * d, glm::quat(1, 0, 0, 0), glm::vec3(1.0f));
-    }
-    Node& n = m_scene.nodes[node];
-    n.hasResizeHome = true;
-    n.resizeHomeXZ = home;
-    n.resizeHomeT = n.translation;
-}
-
-// XZ を保つ対象: オブジェクト (またはルート) で、自身が動かず (移動キーがずれない)、スキンメッシュでもない
-// (スキンメッシュはノードの変換が無視されるので動かしても意味がない)
-static bool KeepsResizeXZ(const Scene& scene, int node) {
-    const Node& n = scene.nodes[node];
-    return (n.objectRoot || n.parent < 0) && !Ops::NodeHasAnimation(scene, node) && !(n.mesh >= 0 && n.skin >= 0);
-}
-
-void Editor::ScaleNodeKeepXZ(int node, const glm::vec3& mul) {
-    if (node < 0 || node >= (int)m_scene.nodes.size()) return;
-    glm::vec2 home;
-    bool keep = KeepsResizeXZ(m_scene, node) && ResizeHomeXZ(node, home);
-    Ops::OffsetNodeTRS(m_scene, node, glm::vec3(0.0f), glm::quat(1, 0, 0, 0), mul);
-    if (keep) RestoreResizeHomeXZ(node, home);
 }
 
 // ---------------------------------------------------------------------------
@@ -1534,45 +1492,25 @@ bool Editor::ScaleTargetsToSize(std::vector<int> targets, int axis, float target
     }
     float f = factor > 0.0f ? factor : targetSize / cur;
     targetSize = cur * f;
-    // トランスフォームのスケールで拡大縮小。
-    // 複数オブジェクトは、全体の足元中心 c を基準に拡大されるよう各基準点も移動する。
-    // 測定と同じレストポーズの行列で位置を補正する (表示中の姿勢を使うとフレームによって位置がずれる)
-    const glm::vec3 c((mn.x + mx.x) * 0.5f, mn.y, (mn.z + mx.z) * 0.5f);
-    // 各オブジェクトの「一番元」の足元の中心 (XZ)。サイズを変えた後にずれていたら戻す
-    std::vector<glm::vec2> homes(targets.size());
-    std::vector<char> keepXZ(targets.size(), 0);
-    for (size_t i = 0; i < targets.size(); ++i) keepXZ[i] = KeepsResizeXZ(m_scene, targets[i]) && ResizeHomeXZ(targets[i], homes[i]);
-    {
-        auto w0 = m_scene.ComputeWorldMatrices();
-        std::vector<glm::vec3> pivots;
-        for (int t : targets) pivots.push_back(glm::vec3(w0[t][3]));
-        for (int t : targets) Ops::OffsetNodeTRS(m_scene, t, glm::vec3(0.0f), glm::quat(1, 0, 0, 0), glm::vec3(f));
-        for (size_t i = 0; i < targets.size(); ++i) {
-            const Node& n = m_scene.nodes[targets[i]];
-            glm::vec3 d = (c + (pivots[i] - c) * f) - pivots[i];
-            glm::mat3 pw = n.parent >= 0 ? glm::mat3(w0[n.parent]) : glm::mat3(1.0f);
-            Ops::OffsetNodeTRS(m_scene, targets[i], glm::inverse(pw) * d, glm::quat(1, 0, 0, 0), glm::vec3(1.0f));
-        }
-    }
-    glm::vec3 mn2, mx2;
-    ComputeTargetsBounds(targets, mn2, mx2);
-    glm::vec3 delta(0.0f);
+    // トランスフォームのスケールで拡大縮小。各オブジェクトは自分の原点 (ピボット) を中心に拡大し、原点は動かさない
+    // (エンジンでスケールを変えたときと同じ。書き出した後の原点の位置も変わらない)
+    for (int t : targets) Ops::OffsetNodeTRS(m_scene, t, glm::vec3(0.0f), glm::quat(1, 0, 0, 0), glm::vec3(f));
+    // 定規に合わせるときだけ移動する (足元 / 上端を定規の原点に、必要なら XZ も)
     if (anchor) {
+        glm::vec3 mn2, mx2;
+        ComputeTargetsBounds(targets, mn2, mx2);
+        glm::vec3 delta(0.0f);
         delta.y = anchor->y - (anchorTop ? mx2.y : mn2.y);
         if (alignXZ) {
             delta.x = anchor->x - (mn2.x + mx2.x) * 0.5f;
             delta.z = anchor->z - (mn2.z + mx2.z) * 0.5f;
         }
-    } else {
-        // 足元の中心を元の位置に保つ
-        glm::vec3 c1((mn.x + mx.x) * 0.5f, mn.y, (mn.z + mx.z) * 0.5f), c2((mn2.x + mx2.x) * 0.5f, mn2.y, (mn2.z + mx2.z) * 0.5f);
-        delta = c1 - c2;
-    }
-    auto world = m_scene.ComputeWorldMatrices();
-    for (int t : targets) {
-        const Node& n = m_scene.nodes[t];
-        glm::mat3 pw = n.parent >= 0 ? glm::mat3(world[n.parent]) : glm::mat3(1.0f);
-        Ops::OffsetNodeTRS(m_scene, t, glm::inverse(pw) * delta, glm::quat(1, 0, 0, 0), glm::vec3(1.0f));
+        auto world = m_scene.ComputeWorldMatrices();
+        for (int t : targets) {
+            const Node& n = m_scene.nodes[t];
+            glm::mat3 pw = n.parent >= 0 ? glm::mat3(world[n.parent]) : glm::mat3(1.0f);
+            Ops::OffsetNodeTRS(m_scene, t, glm::inverse(pw) * delta, glm::quat(1, 0, 0, 0), glm::vec3(1.0f));
+        }
     }
     // 対象同士が別の親を持つ場合などに残る誤差を、もう一度測って詰める
     if (anchor) {
@@ -1586,16 +1524,6 @@ bool Editor::ScaleTargetsToSize(std::vector<int> targets, int axis, float target
                 glm::mat3 pw = n.parent >= 0 ? glm::mat3(w2[n.parent]) : glm::mat3(1.0f);
                 Ops::OffsetNodeTRS(m_scene, t, glm::inverse(pw) * glm::vec3(0, off, 0), glm::quat(1, 0, 0, 0), glm::vec3(1.0f));
             }
-        }
-    }
-    // XZ を一番元の位置に戻す。定規に XZ を合わせたときは、その位置を新しい元の位置として記録する
-    for (size_t i = 0; i < targets.size(); ++i) {
-        if (!keepXZ[i]) continue;
-        if (anchor && alignXZ) {
-            glm::vec3 a, b;
-            if (ComputeTargetsBounds({ targets[i] }, a, b)) RestoreResizeHomeXZ(targets[i], glm::vec2((a.x + b.x) * 0.5f, (a.z + b.z) * 0.5f));
-        } else {
-            RestoreResizeHomeXZ(targets[i], homes[i]);
         }
     }
     m_eulerNode = -1;

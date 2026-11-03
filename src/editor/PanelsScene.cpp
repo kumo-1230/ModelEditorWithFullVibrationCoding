@@ -401,7 +401,7 @@ void Editor::DrawTransformEditor(int idx) {
                 if (std::abs(b.s[k]) > 1e-12f) mul[k] = ns[k] / b.s[k];
                 else LOG_WARN("'%s' のスケール %c が 0 のため倍率で変更できません", m_scene.nodes[st].name.c_str(), "XYZ"[k]);
             }
-            ScaleNodeKeepXZ(st, mul); // オブジェクトはピボットではなく足元の中心が元の XZ に残る
+            Ops::OffsetNodeTRS(m_scene, st, glm::vec3(0.0f), qI, mul); // 原点 (ピボット) を中心に拡大。原点は動かさない
         }
     }
     if (multi && glm::any(mixS)) { ImGui::SameLine(); ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "混在 %s", mixedLabel(mixS).c_str()); }
@@ -424,7 +424,7 @@ void Editor::DrawTransformEditor(int idx) {
                 if (st < 0) continue; // 親が無い = スケール 1
                 glm::vec3 bs = base(st).s, mul(1.0f);
                 for (int k = 0; k < 3; ++k) if (std::abs(bs[k]) > 1e-12f) mul[k] = 1.0f / bs[k];
-                ScaleNodeKeepXZ(st, mul);
+                Ops::OffsetNodeTRS(m_scene, st, glm::vec3(0.0f), qI, mul);
             }
         }
         m_eulerNode = -1;

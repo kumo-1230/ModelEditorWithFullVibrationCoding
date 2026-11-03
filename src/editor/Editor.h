@@ -141,12 +141,6 @@ private:
     bool ScaleTargetsToSize(std::vector<int> targets, int axis, float targetSize, const glm::vec3* anchor, bool anchorTop, bool alignXZ, const char* label,
                             float factor = 0.0f);
     float m_scaleFactor = 2.0f;     // 倍率で拡大縮小
-    // サイズ変更の前に呼ぶ: オブジェクトの「一番元」の足元の中心 (XZ)。メッシュが無ければ false
-    bool ResizeHomeXZ(int node, glm::vec2& home);
-    // サイズ変更の後に呼ぶ: 足元の中心 (XZ) を home に戻し、次のサイズ変更のために記録する
-    void RestoreResizeHomeXZ(int node, const glm::vec2& home);
-    // インスペクター / ギズモ / リセット用: スケールを掛け、オブジェクトなら XZ を元に戻す
-    void ScaleNodeKeepXZ(int node, const glm::vec3& mul);
     std::vector<int> FitTargetsForSelection();
     // 表示中の姿勢 (アニメーション適用後) のワールド行列
     std::vector<glm::mat4> PosedWorld() const;

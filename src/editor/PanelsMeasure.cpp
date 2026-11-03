@@ -217,7 +217,7 @@ void Editor::DrawMeasure() {
             if (q != 0.01f) ImGui::SameLine();
             if (ImGui::SmallButton(lbl)) ScaleTargetsToSize(FitTargetsForSelection(), 1, 0.0f, nullptr, false, false, "倍率で拡大縮小", q);
         }
-        ImGui::TextDisabled("足元の中心を保ったまま拡大縮小します。アニメーション付きのモデルは親 (オブジェクト) で拡大するので、\nルートモーションも同じ倍率になります");
+        ImGui::TextDisabled("オブジェクトの原点 (ピボット) を中心に拡大縮小します (原点は動きません)。アニメーション付きのモデルは親 (オブジェクト) で拡大するので、\nルートモーションも同じ倍率になります");
     }
 
     // ---- 定規 ---------------------------------------------------------------
