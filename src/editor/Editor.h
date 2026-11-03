@@ -1,4 +1,5 @@
 #pragma once
+#include "core/Diagnostics.h"
 #include "core/Scene.h"
 #include "core/Undo.h"
 #include "core/Validate.h"
@@ -12,6 +13,7 @@
 #include <future>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 struct ID3D11Device;
@@ -153,6 +155,33 @@ private:
     std::vector<Issue> m_issues;
     uint64_t m_issuesRevision = 0;
     bool m_autoValidate = true;
+    double m_lastChangeTime = 0.0; // 編集が止まってから自動検証する (ドラッグ中に毎フレーム重い検証をしない)
+
+    // モデル診断
+    bool m_showOpenEdges = false;     // 開いた辺 (穴) を黄色で表示
+    bool m_showNonManifold = false;   // 非多様体の辺を桃色で表示
+    bool m_showRootPath = false;      // ルートモーションの軌跡
+    bool m_showPivots = false;        // オブジェクトのピボット (原点) と中心
+    bool m_vertexInspect = false;     // クリックで頂点を調べる
+    bool m_vertexHitValid = false;
+    MeshHit m_vertexHit;
+    struct TopoCache {
+        uint64_t uid = 0;
+        std::vector<TopologyInfo> prims;
+        std::vector<UVInfo> uvs;
+    };
+    std::unordered_map<int, TopoCache> m_topoCache; // メッシュ番号 → トポロジー (メッシュの uid が変われば作り直す)
+    const TopoCache& Topology(int mesh);
+    std::vector<AnimationReport> m_animReports;
+    uint64_t m_animReportsRev = 0;
+    std::vector<glm::vec3> m_rootPath;
+    uint64_t m_rootPathRev = 0;
+    int m_rootPathAnim = -2;
+    int m_diagSkin = 0;
+    int m_diagForceTab = -1;          // 自己テスト用: 次のフレームで開くタブ
+    void DrawDiagnostics();
+    void SubmitDiagnosticLines();
+    bool InspectVertexAt(const ImVec2& mouseInViewport, const ImVec2& viewportSize);
 
     // パネル表示
     struct Panels {
@@ -161,6 +190,7 @@ private:
         bool history = false, uvViewer = false, exportWin = false, importWin = false, batchRename = false;
         bool settings = false, help = false, imguiDemo = false, imguiMetrics = false, dump = false;
         bool measure = true;
+        bool diagnostics = true;
     } m_panels;
     bool m_resetLayout = false;
     bool m_firstFrame = true;

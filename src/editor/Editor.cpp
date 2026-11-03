@@ -62,6 +62,7 @@ void Editor::Checkpoint(const std::string& label) {
 void Editor::MarkChanged() {
     m_dirty = true;
     ++m_sceneRevision;
+    m_lastChangeTime = ImGui::GetCurrentContext() ? ImGui::GetTime() : 0.0;
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +267,8 @@ void Editor::NewScene() {
     Checkpoint("新規シーン");
     m_scene.Clear();
     m_currentPath.clear();
+    m_vertexHitValid = false;
+    m_topoCache.clear();
     ClearSelection();
     ValidateSelection();
     m_anim = -1;
@@ -360,6 +363,8 @@ void Editor::FinishImport(ImportResult& r) {
     m_scene = std::move(r.scene);
     m_currentPath = r.path;
     m_renderer.ClearCaches();
+    m_vertexHitValid = false;
+    m_topoCache.clear();
     ClearSelection();
     m_selMesh = m_scene.meshes.empty() ? -1 : 0;
     m_selMaterial = m_scene.materials.empty() ? -1 : 0;
@@ -597,7 +602,8 @@ void Editor::Frame() {
     UpdateAnimation(io.DeltaTime);
     UpdateWorld();
 
-    if (m_autoValidate && m_issuesRevision != m_sceneRevision) {
+    // 編集が 0.3 秒止まってから検証する (ギズモのドラッグ中などに毎フレーム重い検証をしない)
+    if (m_autoValidate && m_issuesRevision != m_sceneRevision && (ImGui::GetTime() - m_lastChangeTime > 0.3 || m_smokeTest)) {
         m_issues = ValidateScene(m_scene);
         m_issuesRevision = m_sceneRevision;
     }
@@ -635,6 +641,7 @@ void Editor::Frame() {
     if (m_panels.help) DrawHelp();
     if (m_panels.dump) DrawDump();
     if (m_panels.measure) DrawMeasure();
+    if (m_panels.diagnostics) DrawDiagnostics();
     if (m_panels.imguiDemo) ImGui::ShowDemoWindow(&m_panels.imguiDemo);
     if (m_panels.imguiMetrics) ImGui::ShowMetricsWindow(&m_panels.imguiMetrics);
     DrawImportingPopup();
@@ -672,6 +679,7 @@ void Editor::SetupDockLayout(unsigned dockId) {
     ImGui::DockBuilderDockWindow("アニメーション###Animation", bottom);
     ImGui::DockBuilderDockWindow("コンソール###Console", bottom);
     ImGui::DockBuilderDockWindow("検証###Validation", bottom);
+    ImGui::DockBuilderDockWindow("モデル診断###Diagnostics", bottom);
     ImGui::DockBuilderDockWindow("統計 / デバッグ###Stats", bottom);
     ImGui::DockBuilderDockWindow("履歴###History", bottom);
     ImGui::DockBuilderFinish(dockId);
@@ -918,6 +926,7 @@ void Editor::DrawMainMenu() {
         ImGui::MenuItem("UV ビューア", nullptr, &m_panels.uvViewer);
         ImGui::MenuItem("シーン情報", nullptr, &m_panels.sceneInfo);
         ImGui::MenuItem("単位 / 実寸 / 定規", nullptr, &m_panels.measure);
+        ImGui::MenuItem("モデル診断 (穴・裏返り・ウェイト・アニメーション)", nullptr, &m_panels.diagnostics);
         ImGui::Separator();
         if (ImGui::BeginMenu("表示モード")) {
             for (int i = 0; i < RM_Count; ++i)
@@ -1047,6 +1056,23 @@ void Editor::SmokeTestStep() {
         m_rs.debugSelectedOnly = false;
         m_rs.wireOnShaded = true;
     });
+    step(21, "診断表示を全て ON (開いた辺 / 非多様体 / 軌跡 / ピボット)", [&] {
+        m_showOpenEdges = m_showNonManifold = m_showRootPath = m_showPivots = true;
+        m_panels.diagnostics = true;
+        if (m_anim < 0 && !m_scene.animations.empty()) m_anim = 0;
+    });
+    step(22, "頂点を調べる (ビューポート中央)", [&] {
+        m_vertexInspect = true;
+        m_pickRequested = true;
+        m_pickPos = ImVec2(m_viewportPos.x + m_viewportSize.x * 0.5f, m_viewportPos.y + m_viewportSize.y * 0.5f);
+    });
+    step(25, "頂点を調べた結果", [&] {
+        if (has && !m_vertexHitValid) { LOG_ERROR("[smoke] ビューポート中央の頂点を調べられませんでした"); ++m_smokeErrors; }
+        else if (m_vertexHitValid) LOG_INFO("[smoke] 頂点 %u ('%s')", m_vertexHit.vertex, m_scene.nodes[m_vertexHit.node].name.c_str());
+        m_vertexInspect = false;
+    });
+    for (int t = 0; t < 5; ++t) step(29 + t, "モデル診断のタブ", [&] { m_diagForceTab = t; });
+    step(34, "診断表示 OFF", [&] { m_showOpenEdges = m_showNonManifold = m_showRootPath = m_showPivots = false; });
     step(24, "ワイヤーフレーム", [&] { m_rs.wireframe = true; });
     step(26, "ワイヤー OFF", [&] { m_rs.wireframe = false; m_rs.mode = RM_Lit; });
     auto finish = [&] {

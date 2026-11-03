@@ -14,7 +14,8 @@ template<class T> static void SafeRelease(T*& p) {
 
 const char* RenderModeName(int mode) {
     static const char* names[] = { "ライティング", "ベースカラー", "法線", "UV", "UV チェッカー", "ボーンウェイト",
-                                   "頂点カラー", "メタリック/ラフネス", "オクルージョン", "接線" };
+                                   "頂点カラー", "メタリック/ラフネス", "オクルージョン", "接線", "裏面 (赤)", "法線と面の向き",
+                                   "ウェイト数 (影響ボーン数)" };
     return mode >= 0 && mode < RM_Count ? names[mode] : "?";
 }
 
@@ -481,6 +482,9 @@ void Renderer::Deform(GpuMesh& gm, const Scene& scene, int nodeIdx, const std::v
     }
 }
 
+// UpdateWeightVis の selectedBone にこの値を渡すと、ボーンのウェイトではなく影響ボーン数を書き込む
+static constexpr int kInfluenceCountKey = -100;
+
 void Renderer::UpdateWeightVis(GpuMesh& gm, const Scene& scene, int nodeIdx, int selectedBone) {
     if (gm.weightKey == selectedBone) return;
     gm.weightKey = selectedBone;
@@ -495,7 +499,15 @@ void Renderer::UpdateWeightVis(GpuMesh& gm, const Scene& scene, int nodeIdx, int
         const Primitive& p = mesh.primitives[pi];
         if (!gm.prims[pi].vb[6]) continue;
         std::vector<float> w(p.positions.size(), 0.0f);
-        if (p.HasSkin() && jointIdx >= 0)
+        if (selectedBone == kInfluenceCountKey) {
+            // 影響ボーン数 (0〜4) を 0〜1 にして表示する
+            if (p.HasSkin())
+                for (size_t v = 0; v < w.size(); ++v) {
+                    int c = 0;
+                    for (int k = 0; k < 4; ++k) if (p.weights[v][k] > 1e-4f) ++c;
+                    w[v] = c / 4.0f;
+                }
+        } else if (p.HasSkin() && jointIdx >= 0)
             for (size_t v = 0; v < w.size(); ++v)
                 for (int k = 0; k < 4; ++k)
                     if (p.joints[v][k] == jointIdx) w[v] += p.weights[v][k];
@@ -546,7 +558,9 @@ void Renderer::BindMaterial(const Scene& scene, int matIdx, const RenderSettings
     g_draw.flags1 = glm::ivec4((rs.useVertexColors && g.hasColors) ? 1 : 0, has[4], uv[4], 0);
     m_ctx->PSSetShaderResources(0, 6, srvs);
     m_ctx->PSSetSamplers(0, 6, samps);
-    m_ctx->RSSetState((m.doubleSided || !rs.backfaceCulling) ? m_rsNoCull : m_rsCull);
+    // 面の向きを確認する表示モードでは裏面も描く
+    bool noCull = m.doubleSided || !rs.backfaceCulling || rs.mode == RM_Backface || rs.mode == RM_NormalCheck;
+    m_ctx->RSSetState(noCull ? m_rsNoCull : m_rsCull);
 }
 
 // ---------------------------------------------------------------------------
@@ -791,6 +805,7 @@ void Renderer::Render(const FrameInput& in) {
                 m_stats.deformedMeshes++;
             }
             if (rs.mode == RM_Weights) UpdateWeightVis(gm, scene, i, in.selectedBone);
+            else if (rs.mode == RM_Influences) UpdateWeightVis(gm, scene, i, kInfluenceCountKey);
             glm::mat4 model = skinned ? glm::mat4(1.0f) : world[i];
             for (size_t pi = 0; pi < gm.prims.size(); ++pi) {
                 if (gm.prims[pi].indexCount == 0) continue;

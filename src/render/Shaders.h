@@ -166,6 +166,16 @@ float4 PSMain(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     else if (mode == 7) outColor = float3(0.0, rough, metallic);
     else if (mode == 8) outColor = float3(ao, ao, ao);
     else if (mode == 9) outColor = uFlags0.w == 1 ? normalize(i.tan.xyz) * 0.5 + 0.5 : float3(1, 0, 1);
+    else if (mode == 10) outColor = front ? float3(0.62, 0.66, 0.72) * lambert : float3(0.95, 0.12, 0.12) * (0.5 + 0.5 * lambert);
+    else if (mode == 11) {
+        // 頂点法線がカメラ側を向くかと、表面 (巻き順) がカメラ側を向くかが一致しなければ桃色
+        if (uFlags0.z != 1) outColor = float3(1.0, 0.6, 0.0);
+        else {
+            bool agree = (dot(normalize(i.nrm), V) > 0.0) == front;
+            outColor = agree ? float3(0.62, 0.66, 0.72) * lambert : float3(1.0, 0.2, 0.65);
+        }
+    }
+    else if (mode == 12) outColor = heat(i.weight) * lambert;
     else if (uFlags0.y == 1) outColor = toSRGB(base.rgb);
     else {
         float3 c = brdf(N, V, L, base.rgb, metallic, rough, uParams.xxx);

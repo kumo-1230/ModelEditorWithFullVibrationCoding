@@ -15,6 +15,8 @@ enum class FixAction {
     UniquifyNames,
     RemoveUnused,
     ClampJointIndices,  // mesh
+    FlipInsideOut,      // mesh: 裏返ったメッシュの面と法線を反転
+    FixQuaternions,     // animation: 回転キーの符号と長さを揃える
 };
 
 struct Issue {
@@ -25,6 +27,8 @@ struct Issue {
     int mesh = -1;
     int material = -1;
     int texture = -1;
+    int animation = -1;
+    int prim = -1;
     FixAction fix = FixAction::None;
 };
 

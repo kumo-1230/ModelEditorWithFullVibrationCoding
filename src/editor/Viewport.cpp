@@ -43,7 +43,13 @@ void Editor::DrawViewport() {
     fi.sceneRadius = m_sceneRadius;
 
     SubmitRulerLines();
+    SubmitDiagnosticLines();
     m_renderer.Render(fi);
+    if (m_pickRequested && m_vertexInspect) {
+        // 頂点を調べるモード: 選択は変えず、クリックした頂点の情報を診断パネルに出す
+        InspectVertexAt(ImVec2(m_pickPos.x - pos.x, m_pickPos.y - pos.y), size);
+        m_pickRequested = false;
+    }
     if (m_pickRequested) {
         int hit = m_renderer.Pick(fi, (int)(m_pickPos.x - pos.x), (int)(m_pickPos.y - pos.y));
         bool ctrl = ImGui::GetIO().KeyCtrl, shift = ImGui::GetIO().KeyShift;

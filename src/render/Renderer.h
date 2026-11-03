@@ -19,6 +19,9 @@ enum RenderMode {
     RM_MetalRough,
     RM_Occlusion,
     RM_Tangents,
+    RM_Backface,     // 表面は灰色、裏面は赤 (面の向きの確認。カリングしない)
+    RM_NormalCheck,  // 頂点法線が面の向きと逆なら桃色 (法線の裏返りの確認)
+    RM_Influences,   // 1 頂点に影響するボーンの数 (青 = 1 本 … 赤 = 4 本)
     RM_Count
 };
 const char* RenderModeName(int mode);

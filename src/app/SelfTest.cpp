@@ -1,5 +1,6 @@
 // --selftest <file>: 編集オペレーションがワールド上の見た目を変えないことを数値で検証する
 #include "Cli.h"
+#include "core/Diagnostics.h"
 #include "core/Log.h"
 #include "core/SceneOps.h"
 #include "core/Validate.h"
@@ -161,6 +162,77 @@ bool RunSelfTest(const std::string& path, int& exitCode) {
     });
     check("UniquifyNames + RemoveEmptyNodes", [](Scene& s) { Ops::UniquifyNames(s); Ops::RemoveEmptyNodes(s); return true; });
 
+    // ---- 診断: わざと壊した形状を正しく見つけ、直せるか -------------------------
+    {
+        auto result = [&](const char* name, bool pass, const std::string& detail) {
+            if (!pass) ++failed;
+            printf("[%s] 診断: %-34s %s\n", pass ? "PASS" : "FAIL", name, detail.c_str());
+        };
+        auto hasIssue = [](const Scene& s, FixAction fix, const char* category) {
+            for (auto& is : ValidateScene(s))
+                if ((fix != FixAction::None && is.fix == fix) || (category && is.category == category)) return true;
+            return false;
+        };
+        Scene cubeScene;
+        int cube = Ops::CreatePrimitive(cubeScene, Ops::Prim_Cube, 1.0f);
+        Primitive& cp = cubeScene.meshes[cubeScene.nodes[cube].mesh].primitives[0];
+        TopologyInfo t0 = AnalyzeTopology(cp);
+        result("立方体は閉じていて向きが揃う", t0.closed && t0.openEdges == 0 && t0.windingMismatch == 0 && t0.signedVolume > 0 && t0.normalsAgainstFaces == 0,
+               "開いた辺 " + std::to_string(t0.openEdges) + " / 体積 " + std::to_string(t0.signedVolume));
+        // 裏返し (法線も巻き順も内向き) → 検出 → 自動修正
+        Scene inside = cubeScene;
+        Ops::FlipNormals(inside.meshes[inside.nodes[cube].mesh].primitives[0]);
+        bool found = hasIssue(inside, FixAction::FlipInsideOut, nullptr);
+        for (auto& is : ValidateScene(inside)) ApplyFix(inside, is);
+        TopologyInfo t1 = AnalyzeTopology(inside.meshes[inside.nodes[cube].mesh].primitives[0]);
+        result("裏返った立方体を検出して修正", found && t1.signedVolume > 0 && t1.normalsAgainstFaces == 0, found ? "検出 OK" : "検出できず");
+        // 1 枚だけ裏返った面
+        Scene oneFlip = cubeScene;
+        auto& oi = oneFlip.meshes[oneFlip.nodes[cube].mesh].primitives[0].indices;
+        std::swap(oi[1], oi[2]);
+        TopologyInfo t2 = AnalyzeTopology(oneFlip.meshes[oneFlip.nodes[cube].mesh].primitives[0]);
+        result("1 枚だけ裏返った面を検出", t2.windingMismatch > 0, "向き不一致の辺 " + std::to_string(t2.windingMismatch));
+        // 重なった三角形 (同じ面を 2 回)
+        Scene dup = cubeScene;
+        auto& di = dup.meshes[dup.nodes[cube].mesh].primitives[0].indices;
+        di.insert(di.end(), { di[0], di[1], di[2] });
+        TopologyInfo t3 = AnalyzeTopology(dup.meshes[dup.nodes[cube].mesh].primitives[0]);
+        result("重なった三角形と非多様体の辺を検出", t3.duplicateTriangles == 1 && t3.nonManifoldEdges > 0,
+               "重なり " + std::to_string(t3.duplicateTriangles) + " / 非多様体 " + std::to_string(t3.nonManifoldEdges));
+        // 板 (開いた形状)
+        Scene planeScene;
+        int plane = Ops::CreatePrimitive(planeScene, Ops::Prim_Plane, 1.0f);
+        TopologyInfo t4 = AnalyzeTopology(planeScene.meshes[planeScene.nodes[plane].mesh].primitives[0]);
+        result("板の縁を開いた辺として検出", !t4.closed && t4.openEdges > 0, "開いた辺 " + std::to_string(t4.openEdges));
+        // レイキャスト: 真上から立方体 (高さ 0〜1) の上面に当たる
+        MeshHit hit;
+        bool rayOk = RaycastMeshes(cubeScene, cubeScene.ComputeWorldMatrices(), glm::vec3(0.1f, 5.0f, 0.2f), glm::vec3(0, -1, 0), hit);
+        result("レイキャストで上面に当たる", rayOk && hit.node == cube && std::abs(hit.pos.y - 1.0f) < 1e-4f, rayOk ? "y=" + std::to_string(hit.pos.y) : "当たらず");
+        // テクスチャの割り当て間違いの推測
+        result("ノーマルマップの色を判定", LooksLikeNormalMap(glm::vec4(0.5f, 0.5f, 1.0f, 1)) && !LooksLikeNormalMap(glm::vec4(0.8f, 0.3f, 0.2f, 1)), "");
+    }
+    if (path == "@rig") {
+        auto result = [&](const char* name, bool pass, const std::string& detail) {
+            if (!pass) ++failed;
+            printf("[%s] 診断: %-34s %s\n", pass ? "PASS" : "FAIL", name, detail.c_str());
+        };
+        AnimationReport r = AnalyzeAnimation(base, 0);
+        int root = base.FindNode("RootBone");
+        result("ルートモーションを検出", r.rootNode == root && std::abs(r.rootDisplacement - 3.0f) < 1e-3f && r.maxBoundsRatio < 3.0f,
+               "移動 " + std::to_string(r.rootDisplacement) + " m / 範囲の最大倍率 " + std::to_string(r.maxBoundsRatio));
+        result("レストポーズ = バインドポーズ", BindPoseDeviation(base, base.FindNode("Cylinder1")) < 1e-5f, "");
+        // 回転キーの符号を反転させる (同じ向きだが、補間すると遠回りになる)
+        Scene flipped = base;
+        for (auto& c : flipped.animations[0].channels)
+            if (c.path == AnimPath::Rotation && c.values.size() >= 2) c.values[1] = -c.values[1];
+        int before = AnalyzeAnimation(flipped, 0).quatFlips;
+        auto keyPose = WorldPositions(flipped, PoseAt(flipped, 1.0f));
+        int fixedKeys = FixQuaternionKeys(flipped.animations[0]);
+        int after = AnalyzeAnimation(flipped, 0).quatFlips;
+        float keyErr = MaxError(keyPose, WorldPositions(flipped, PoseAt(flipped, 1.0f)));
+        result("回転キーの反転を検出して修正", before > 0 && fixedKeys > 0 && after == 0 && keyErr <= tol,
+               "反転 " + std::to_string(before) + " → " + std::to_string(after) + " / キー時刻の姿勢誤差 " + std::to_string(keyErr));
+    }
     // アニメーション速度 x2: 速くした後の時刻 t/2 の姿勢が、元の時刻 t の姿勢と一致するか
     if (!base.animations.empty()) {
         Scene fast = base;
