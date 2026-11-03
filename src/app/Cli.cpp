@@ -30,6 +30,7 @@ static void PrintHelp() {
         "  --fbx-ascii               FBX を ASCII で出力\n"
         "  --embed-fbx-textures      FBX にテクスチャを埋め込む\n"
         "  --no-anim / --no-skin / --no-morph / --no-tangents\n"
+        "  --anim-speed <f>          全アニメーションを f 倍速にする (2 で 2 倍速、長さは半分)\n"
         "  --fix                     検証で見つかった修正可能な問題を自動修正\n"
         "  --strip-namespaces        ノード名の 'xxx:' を除去\n");
 }
@@ -41,6 +42,7 @@ bool RunCli(const std::vector<std::string>& args, int& exitCode) {
     ExportOptions eo;
     eo.format = ExportFormat::GLB;
     bool freezeAll = false, applyRootScale = false, fix = false, stripNs = false;
+    float animSpeed = 1.0f;
     for (size_t i = 1; i < args.size(); ++i) {
         const std::string& a = args[i];
         auto next = [&]() -> std::string { return i + 1 < args.size() ? args[++i] : std::string(); };
@@ -68,6 +70,7 @@ bool RunCli(const std::vector<std::string>& args, int& exitCode) {
         else if (a == "--fbx-ascii") eo.format = ExportFormat::FBX_ASCII;
         else if (a == "--embed-fbx-textures") eo.embedTexturesFBX = true;
         else if (a == "--no-anim") eo.exportAnimations = false;
+        else if (a == "--anim-speed") animSpeed = std::stof(next());
         else if (a == "--no-skin") eo.exportSkins = false;
         else if (a == "--no-morph") eo.exportMorphTargets = false;
         else if (a == "--no-tangents") eo.exportTangents = false;
@@ -93,6 +96,10 @@ bool RunCli(const std::vector<std::string>& args, int& exitCode) {
         }
     if (freezeAll)
         for (int r : std::vector<int>(scene.roots)) Ops::FreezeHierarchy(scene, r, true, true, true, nullptr);
+    if (animSpeed > 0.0f && std::abs(animSpeed - 1.0f) > 1e-6f) {
+        for (auto& a : scene.animations) Ops::ScaleAnimationSpeed(a, animSpeed);
+        LOG_INFO("アニメーション %zu 個の速度を x%g にしました", scene.animations.size(), animSpeed);
+    }
 
     auto issues = ValidateScene(scene);
     if (fix) {

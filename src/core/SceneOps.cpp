@@ -976,6 +976,13 @@ int CreatePrimitive(Scene& scene, int type, float size, int parent) {
     return node;
 }
 
+void ScaleAnimationSpeed(Animation& anim, float speed) {
+    if (!(speed > 0.0f)) return;
+    for (auto& c : anim.channels)
+        for (auto& t : c.times) t /= speed;
+    anim.RecomputeDuration();
+}
+
 void AppendScene(Scene& dst, const Scene& src) {
     const int nOff = (int)dst.nodes.size(), mOff = (int)dst.meshes.size(), matOff = (int)dst.materials.size();
     const int tOff = (int)dst.textures.size(), sOff = (int)dst.skins.size();

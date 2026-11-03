@@ -161,6 +161,21 @@ bool RunSelfTest(const std::string& path, int& exitCode) {
     });
     check("UniquifyNames + RemoveEmptyNodes", [](Scene& s) { Ops::UniquifyNames(s); Ops::RemoveEmptyNodes(s); return true; });
 
+    // アニメーション速度 x2: 速くした後の時刻 t/2 の姿勢が、元の時刻 t の姿勢と一致するか
+    if (!base.animations.empty()) {
+        Scene fast = base;
+        Ops::ScaleAnimationSpeed(fast.animations[0], 2.0f);
+        float e = 0.0f;
+        for (float k : { 0.0f, 0.3f, 0.5f, 0.8f, 1.0f }) {
+            float t = base.animations[0].duration * k;
+            e = std::max(e, MaxError(WorldPositions(base, PoseAt(base, t)), WorldPositions(fast, PoseAt(fast, t * 0.5f))));
+        }
+        bool lenOk = std::abs(fast.animations[0].duration - base.animations[0].duration * 0.5f) < 1e-5f;
+        bool pass = e <= tol && lenOk;
+        if (!pass) ++failed;
+        printf("[%s] %-40s 長さ %.3f→%.3f 姿勢誤差=%.3g\n", pass ? "PASS" : "FAIL", "アニメーション速度 x2", base.animations[0].duration,
+               fast.animations[0].duration, e);
+    }
     // オブジェクトノード (親) で x1.7 → 書き出し用の焼き込み。全フレームのボーン・頂点で比較する
     const float objScale = 1.7f;
     Scene parentScaled = base;

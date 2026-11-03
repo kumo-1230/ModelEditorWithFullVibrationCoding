@@ -81,6 +81,10 @@ const char* PrimitiveName(int type);
 // 基本形状のノードを作成 (size = 一辺/直径/高さ [m])。底面が Y=0 に乗るように配置する。ノード番号を返す
 int CreatePrimitive(Scene& scene, int type, float size, int parent = -1);
 
+// --- アニメーション ---------------------------------------------------------
+// 再生速度を speed 倍にする (キーの時刻を 1/speed 倍。2 なら 2 倍速で長さは半分)。書き出しにも反映される
+void ScaleAnimationSpeed(Animation& anim, float speed);
+
 // --- シーン結合 -------------------------------------------------------------
 // src の全要素を dst に追加する (ルートは dst のルートとして追加)
 void AppendScene(Scene& dst, const Scene& src);

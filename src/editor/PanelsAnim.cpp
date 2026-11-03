@@ -215,22 +215,50 @@ void Editor::DrawAnimation() {
         ImGui::Checkbox("ループ", &m_loop);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(120);
-        ImGui::SliderFloat("速度", &m_animSpeed, -2.0f, 4.0f, "%.2fx");
+        ImGui::SliderFloat("プレビュー速度", &m_animSpeed, -2.0f, 4.0f, "%.2fx");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("再生の確認用です (データは変わらず、書き出しにも影響しません)。\n書き出す速度を変えるには下の「アニメーション速度」を使います");
         ImGui::SetNextItemWidth(-1);
         ImGui::SliderFloat("##time", &m_animTime, 0.0f, std::max(a.duration, 1e-3f), "%.3f 秒");
         ImGui::TextDisabled("フレーム (30fps): %d / %d", (int)(m_animTime * 30.0f + 0.5f), (int)(a.duration * 30.0f + 0.5f));
 
+        // アニメーションの速度 (キーの時刻を変える。書き出しにも反映)
+        ImGui::SeparatorText("アニメーション速度 (書き出しに反映)");
+        static float speed = 1.5f;
+        static float targetLen = 1.0f;
+        static bool allAnims = false;
+        auto applySpeed = [&](float s, const char* label) {
+            if (!(s > 0.0f) || std::abs(s - 1.0f) < 1e-6f) return;
+            Checkpoint(label);
+            if (allAnims) for (auto& an : m_scene.animations) Ops::ScaleAnimationSpeed(an, s);
+            else Ops::ScaleAnimationSpeed(a, s);
+            m_animTime /= s; // 同じ動きの位置を表示し続ける
+            LOG_INFO("%s のアニメーション速度を x%.4g にしました (長さ %.3f 秒)", allAnims ? "全" : ("'" + a.name + "'").c_str(), s, a.duration);
+            MarkChanged();
+        };
+        ImGui::SetNextItemWidth(100);
+        ImGui::InputFloat("倍速##speed", &speed, 0, 0, "%.4g");
+        speed = std::max(speed, 1e-3f);
+        ImGui::SameLine();
+        if (ImGui::Button("この速さにする")) applySpeed(speed, "アニメーション速度");
+        ImGui::SameLine();
+        ImGui::TextDisabled("→ 長さ %.3f 秒", a.duration / speed);
+        for (float q : { 0.25f, 0.5f, 0.75f, 1.25f, 1.5f, 2.0f }) {
+            char lbl[32];
+            snprintf(lbl, sizeof(lbl), "x%g", q);
+            if (q != 0.25f) ImGui::SameLine();
+            if (ImGui::SmallButton(lbl)) applySpeed(q, "アニメーション速度");
+        }
+        ImGui::SetNextItemWidth(100);
+        ImGui::InputFloat("秒##len", &targetLen, 0, 0, "%.4g");
+        targetLen = std::max(targetLen, 1e-3f);
+        ImGui::SameLine();
+        if (ImGui::Button("この長さにする") && a.duration > 1e-6f) applySpeed(a.duration / targetLen, "アニメーションの長さ");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("今の長さ")) targetLen = a.duration;
+        ImGui::Checkbox("全アニメーションに適用", &allAnims);
+        ImGui::TextDisabled("x2 で 2 倍速 (長さは半分)。ルートモーションの移動距離は変わらず、速さだけが変わります");
+
         if (ImGui::TreeNode("ツール")) {
-            static float timeScale = 1.0f;
-            ImGui::SetNextItemWidth(100);
-            ImGui::InputFloat("時間倍率", &timeScale, 0, 0, "%.3f");
-            ImGui::SameLine();
-            if (ImGui::Button("時間をスケール") && timeScale > 0) {
-                Checkpoint("アニメーション時間スケール");
-                for (auto& c : a.channels) for (auto& t : c.times) t *= timeScale;
-                a.RecomputeDuration();
-                MarkChanged();
-            }
             if (ImGui::Button("ルートの移動キーを削除 (インプレース化)")) {
                 Checkpoint("インプレース化");
                 int removed = 0;
