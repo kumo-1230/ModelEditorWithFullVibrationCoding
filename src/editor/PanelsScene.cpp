@@ -3,6 +3,7 @@
 #include "core/Log.h"
 #include "core/SceneOps.h"
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_stdlib.h>
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
@@ -22,22 +23,24 @@ void Editor::DrawHierarchy() {
     PanelHint("モデルの部品 (ノード) の親子関係です。クリックで選択、ドラッグ&ドロップで親子付け、右クリックで操作メニューが開きます");
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##filter", "名前で検索...", &m_hierarchyFilter);
+    // ボタンはパネルの幅に入るだけ横に並べ、入らなければ次の行へ回す (枠外に出て押せなくならないように)
     ImGui::TextDisabled("ノード %zu  選択 %zu", m_scene.nodes.size(), m_selection.size());
-    ImGui::SameLine();
+    SameLineIfFits("+ノード");
     if (ImGui::SmallButton("+ノード")) {
         Checkpoint("ノード作成");
         int n = m_scene.AddNode("Node", m_primary);
         Select(n);
         MarkChanged();
     }
-    ImGui::SameLine();
+    SameLineIfFits("すべて展開");
     if (ImGui::SmallButton("すべて展開")) m_revealNode = -2;
+    SameLineIfFits("表示切替 (H)");
     if (ImGui::SmallButton("表示切替 (H)")) ToggleSelectionVisibility();
-    ImGui::SameLine();
+    SameLineIfFits("選択のみ (I)");
     if (ImGui::SmallButton("選択のみ (I)")) IsolateSelection();
-    ImGui::SameLine();
+    SameLineIfFits("全表示 (Shift+H)");
     if (ImGui::SmallButton("全表示 (Shift+H)")) ShowAll();
-    ImGui::SameLine();
+    SameLineIfFits("+形状");
     if (ImGui::SmallButton("+形状")) ImGui::OpenPopup("primpop");
     if (ImGui::BeginPopup("primpop")) {
         for (int t = 0; t < Ops::Prim_Count; ++t)
@@ -89,8 +92,29 @@ void Editor::DrawHierarchyNode(int idx, const std::vector<bool>& joints, const s
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_SpanAvailWidth;
     if (leaf) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
     if (IsSelected(idx)) flags |= ImGuiTreeNodeFlags_Selected;
-    if (!m_hierarchyFilter.empty() || m_revealNode == -2) ImGui::SetNextItemOpen(true);
-    else if (m_revealNode >= 0 && m_scene.IsAncestor(idx, m_revealNode)) ImGui::SetNextItemOpen(true);
+    const bool forceOpen = !m_hierarchyFilter.empty() || m_revealNode == -2 || (m_revealNode >= 0 && m_scene.IsAncestor(idx, m_revealNode));
+
+    // カリング: 画面外の行は描かずに高さだけ確保する (開いている子も同じように処理し、スクロール量は変えない)
+    {
+        const float rowH = m_hierRowH > 0 ? m_hierRowH : ImGui::GetFrameHeightWithSpacing();
+        const ImVec2 cp = ImGui::GetCursorScreenPos();
+        const bool onScreen = ImGui::IsRectVisible(cp, ImVec2(cp.x + 1.0f, cp.y + rowH));
+        if (!onScreen && m_renameNode != idx && m_revealNode != idx && !forceOpen) {
+            const ImGuiID id = ImGui::GetID("##node");
+            const bool open = !leaf && ImGui::GetStateStorage()->GetInt(id, 0) != 0;
+            ImGui::Dummy(ImVec2(1.0f, rowH - ImGui::GetStyle().ItemSpacing.y));
+            if (open) {
+                ImGui::TreePushOverrideID(id); // 描いたときと同じ ID / 字下げにする
+                for (int c : std::vector<int>(n.children))
+                    if (c < (int)m_scene.nodes.size()) DrawHierarchyNode(c, joints, pass);
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+            return;
+        }
+    }
+    const float rowStartY = ImGui::GetCursorPosY();
+    if (forceOpen) ImGui::SetNextItemOpen(true);
 
     // 表示/非表示
     bool vis = n.visible;
@@ -161,7 +185,7 @@ void Editor::DrawHierarchyNode(int idx, const std::vector<bool>& joints, const s
     if (ImGui::IsItemHovered()) {
         ImGui::BeginTooltip();
         ImGui::Text("[%d] %s", idx, n.name.c_str());
-        ImGui::TextDisabled("%s", m_scene.NodePath(idx).c_str());
+        ImGui::TextDisabled("%s", m_scene.NodePath(idx).c_str()); // ツールチップは中身に合わせて広がるので省略しない
         if (n.mesh >= 0 && n.mesh < (int)m_scene.meshes.size())
             ImGui::Text("メッシュ: %s (%zu 頂点 / %zu 三角形)", m_scene.meshes[n.mesh].name.c_str(), m_scene.meshes[n.mesh].VertexCount(), m_scene.meshes[n.mesh].TriangleCount());
         if (n.skin >= 0) ImGui::Text("スキン: %d", n.skin);
@@ -193,6 +217,7 @@ void Editor::DrawHierarchyNode(int idx, const std::vector<bool>& joints, const s
         DrawNodeContextMenu(idx);
         ImGui::EndPopup();
     }
+    m_hierRowH = ImGui::GetCursorPosY() - rowStartY; // 描いた行の高さ (画面外の行の高さに使う)
 
     if (open && !leaf) {
         for (int c : std::vector<int>(m_scene.nodes[idx].children))
@@ -506,7 +531,7 @@ void Editor::DrawInspector() {
 
     ImGui::Text("ノード [%d]", idx);
     ImGui::SameLine();
-    ImGui::TextDisabled("%s", m_scene.NodePath(idx).c_str());
+    EllipsisText("", m_scene.NodePath(idx), true);
     ImGui::SetNextItemWidth(-60);
     EditValue("名前変更", n.name, [&] { return ImGui::InputText("名前", &n.name); });
     {
@@ -526,7 +551,7 @@ void Editor::DrawInspector() {
     // 複数選択中は、全部にそろえて変えられるもの (トランスフォームと倍率) だけを出す
     if (m_selection.size() > 1) {
         if (SectionHeader(ICON_SCALE, "倍率で拡大縮小 (選択したすべて)", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::SetNextItemWidth(120);
+            ImGui::SetNextItemWidth(Px(120));
             ImGui::InputFloat("倍##multiFactor", &m_scaleFactor, 0, 0, "%.6g");
             m_scaleFactor = std::max(m_scaleFactor, 1e-6f);
             ImGui::SameLine();

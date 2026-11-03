@@ -365,30 +365,39 @@ static size_t FindKey(const std::vector<float>& times, float t) {
     return (size_t)(it - times.begin()) - 1;
 }
 
+glm::vec4 EvalChannel(const AnimChannel& ch, float time) {
+    if (ch.times.empty() || ch.values.size() < ch.times.size()) return glm::vec4(0.0f);
+    if (ch.times.size() == 1 || time <= ch.times.front()) return ch.values.front();
+    if (time >= ch.times.back()) return ch.values[ch.times.size() - 1];
+    size_t k = FindKey(ch.times, time);
+    size_t k1 = std::min(k + 1, ch.times.size() - 1);
+    float t0 = ch.times[k], t1 = ch.times[k1];
+    float f = (t1 > t0) ? (time - t0) / (t1 - t0) : 0.0f;
+    if (ch.interp == Interp::Step) f = 0.0f;
+    const glm::vec4& a = ch.values[k];
+    const glm::vec4& b = ch.values[k1];
+    if (ch.IsCubic()) {
+        // エルミート補間 (glTF CUBICSPLINE と同じ式)。回転は 4 成分を補間して正規化する
+        const float dt = t1 - t0, f2 = f * f, f3 = f2 * f;
+        glm::vec4 v = (2 * f3 - 3 * f2 + 1) * a + (f3 - 2 * f2 + f) * dt * ch.outTangents[k] + (-2 * f3 + 3 * f2) * b + (f3 - f2) * dt * ch.inTangents[k1];
+        if (ch.path == AnimPath::Rotation) {
+            float l = glm::length(v);
+            if (l > 1e-12f) v /= l;
+        }
+        return v;
+    }
+    if (ch.path == AnimPath::Rotation) {
+        glm::quat qa(a.w, a.x, a.y, a.z), qb(b.w, b.x, b.y, b.z);
+        glm::quat q = glm::slerp(qa, qb, f);
+        return glm::vec4(q.x, q.y, q.z, q.w);
+    }
+    return glm::mix(a, b, f);
+}
+
 void SampleAnimation(const Scene& scene, const Animation& anim, float time, std::vector<NodePose>& pose) {
     for (const auto& ch : anim.channels) {
         if (ch.node < 0 || ch.node >= (int)pose.size() || ch.times.empty() || ch.values.size() < ch.times.size()) continue;
-        glm::vec4 v;
-        if (ch.times.size() == 1 || time <= ch.times.front()) {
-            v = ch.values.front();
-        } else if (time >= ch.times.back()) {
-            v = ch.values[ch.times.size() - 1];
-        } else {
-            size_t k = FindKey(ch.times, time);
-            size_t k1 = std::min(k + 1, ch.times.size() - 1);
-            float t0 = ch.times[k], t1 = ch.times[k1];
-            float f = (t1 > t0) ? (time - t0) / (t1 - t0) : 0.0f;
-            if (ch.interp == Interp::Step) f = 0.0f;
-            const glm::vec4& a = ch.values[k];
-            const glm::vec4& b = ch.values[k1];
-            if (ch.path == AnimPath::Rotation) {
-                glm::quat qa(a.w, a.x, a.y, a.z), qb(b.w, b.x, b.y, b.z);
-                glm::quat q = glm::slerp(qa, qb, f);
-                v = glm::vec4(q.x, q.y, q.z, q.w);
-            } else {
-                v = glm::mix(a, b, f);
-            }
-        }
+        glm::vec4 v = EvalChannel(ch, time);
         NodePose& p = pose[ch.node];
         switch (ch.path) {
         case AnimPath::Translation: p.t = glm::vec3(v); break;

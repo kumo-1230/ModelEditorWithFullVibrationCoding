@@ -275,7 +275,13 @@ int FixQuaternionKeys(Animation& anim) {
             float l = glm::length(v);
             if (!std::isfinite(l) || l < 1e-12f) { v = glm::vec4(0, 0, 0, 1); ++fixedCount; continue; }
             if (std::abs(l - 1.0f) > 1e-6f) { v /= l; if (std::abs(l - 1.0f) > 1e-3f) ++fixedCount; }
-            if (k > 0 && glm::dot(c.values[k - 1], v) < 0.0f) { v = -v; ++fixedCount; }
+            if (k > 0 && glm::dot(c.values[k - 1], v) < 0.0f) {
+                v = -v;
+                // 曲線の接線も同じ向きに反転する
+                if (k < c.inTangents.size()) c.inTangents[k] = -c.inTangents[k];
+                if (k < c.outTangents.size()) c.outTangents[k] = -c.outTangents[k];
+                ++fixedCount;
+            }
         }
     }
     return fixedCount;

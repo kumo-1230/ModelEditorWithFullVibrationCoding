@@ -158,7 +158,7 @@ struct Skin {
 };
 
 enum class AnimPath { Translation = 0, Rotation = 1, Scale = 2 };
-enum class Interp { Linear = 0, Step = 1 };
+enum class Interp { Linear = 0, Step = 1, CubicSpline = 2 }; // CubicSpline: キーごとの接線を持つ曲線 (glTF の CUBICSPLINE、Maya のスプライン)
 
 struct AnimChannel {
     int node = -1;
@@ -166,6 +166,9 @@ struct AnimChannel {
     Interp interp = Interp::Linear;
     std::vector<float> times;       // 秒
     std::vector<glm::vec4> values;  // T/S は xyz, R は quat(x,y,z,w)
+    // CubicSpline のときの接線 (値の時間微分、1 秒あたり)。in = キーに入る側、out = キーから出る側。それ以外では空
+    std::vector<glm::vec4> inTangents, outTangents;
+    bool IsCubic() const { return interp == Interp::CubicSpline && inTangents.size() == times.size() && outTangents.size() == times.size(); }
 };
 
 struct Animation {
@@ -238,3 +241,5 @@ struct Scene {
 glm::mat4 ComposeTRS(const glm::vec3& t, const glm::quat& r, const glm::vec3& s);
 void DecomposeTRS(const glm::mat4& m, glm::vec3& t, glm::quat& r, glm::vec3& s);
 void SampleAnimation(const Scene& scene, const Animation& anim, float time, std::vector<NodePose>& pose);
+// 1 つのチャンネルの time での値 (線形 / ステップ / 曲線)。回転は quat(x,y,z,w)
+glm::vec4 EvalChannel(const AnimChannel& ch, float time);

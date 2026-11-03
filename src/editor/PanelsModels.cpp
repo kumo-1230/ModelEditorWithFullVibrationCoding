@@ -4,6 +4,7 @@
 #include "core/Log.h"
 #include "core/ModelOps.h"
 #include "core/SceneOps.h"
+#include "util/Dialogs.h"
 #include "util/FileUtil.h"
 #include <imgui.h>
 #include <imgui_stdlib.h>
@@ -176,7 +177,7 @@ void Editor::DrawModelFilterBar() {
 // モデルパネル
 // ---------------------------------------------------------------------------
 void Editor::DrawModels() {
-    ImGui::SetNextWindowSize(ImVec2(420, 520), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(Px(420), Px(520)), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin(PanelTitle(ICON_LAYERS, "モデル", "Models").c_str(), &m_panels.models)) { ImGui::End(); return; }
     PanelHint("読み込んだモデル (ファイル) の一覧です。モデル同士の結合や、アニメーションだけ / モデルだけの抜き出しもここで行います");
     if (m_scene.roots.empty()) {
@@ -231,9 +232,9 @@ void Editor::DrawModels() {
         for (int r : m_scene.roots) if (r != active) SetVisibility({ r }, false, "他のモデルを隠す");
         SetVisibility({ active }, true, "表示");
     }
-    ImGui::SameLine();
+    SameLineIfFits(IconText(ICON_EYE, "すべて表示").c_str());
     if (ImGui::Button(IconText(ICON_EYE, "すべて表示").c_str())) ShowAll();
-    ImGui::SameLine();
+    SameLineIfFits(IconText(ICON_DELETE, "このモデルを閉じる").c_str());
     if (ImGui::Button(IconText(ICON_DELETE, "このモデルを閉じる").c_str())) {
         Checkpoint("モデルを閉じる");
         m_scene.RemoveNodes({ active });
@@ -281,6 +282,11 @@ void Editor::DrawModels() {
         ImGui::SameLine();
         ImGui::Checkbox("スケール", &m_retarget.scaleKeys);
         ImGui::Checkbox("コピー後に元のモデルを閉じる (モーションだけのファイル向け)", &m_combineCloseSrc);
+        ImGui::BeginDisabled(!ready);
+        if (ImGui::Button(IconText(ICON_SKELETON, "ボーンの対応を確認・編集...").c_str())) m_panels.boneMap = true;
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("元のどのボーンの動きを、先のどのボーンに入れるかを一覧で決めます。\n名前が違うリグ同士や、使いたくないボーン (指・小物など) を外したいときに使います");
+        if (!m_retarget.boneMap.empty()) { ImGui::SameLine(); ImGui::TextColored(ImVec4(1, 0.8f, 0.4f, 1), "手で決めた対応 %zu 本", m_retarget.boneMap.size()); }
         ImGui::BeginDisabled(!ready);
         if (ImGui::Button(IconText(ICON_ANIMATION, "アニメーションを移す").c_str())) {
             Checkpoint("アニメーションを移す");
@@ -391,7 +397,7 @@ void Editor::DrawModels() {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("オン: アニメーションを抜き出したら元のモデルのアニメーションを消す / モデルを抜き出したら元はアニメーションだけにする");
     if (ImGui::Button(IconText(ICON_ANIMATION, "アニメーションだけを抜き出す").c_str())) ExtractFromActiveModel(true);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("骨格とアニメーションだけの新しいモデルを作ります (メッシュ・マテリアルなし)。\nモーションだけを別ファイルに書き出したいときに使います");
-    ImGui::SameLine();
+    SameLineIfFits(IconText(ICON_MESH, "モデルだけを抜き出す").c_str());
     if (ImGui::Button(IconText(ICON_MESH, "モデルだけを抜き出す").c_str())) ExtractFromActiveModel(false);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("アニメーションを持たない新しいモデルを作ります");
     ImGui::EndDisabled();
@@ -460,4 +466,128 @@ void Editor::ExtractFromActiveModel(bool animationOnly) {
     m_topoCache.clear();
     MarkChanged();
     LOG_INFO("'%s' を作成しました", m_scene.nodes[newModel].name.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// ボーンの対応付け: 元のモデルのボーンごとに、動きを入れる先のボーンを決める
+// ---------------------------------------------------------------------------
+void Editor::DrawBoneMap() {
+    ImGui::SetNextWindowSize(ImVec2(Px(560), Px(560)), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin(PanelTitle(ICON_SKELETON, "ボーンの対応付け", "BoneMap").c_str(), &m_panels.boneMap)) { ImGui::End(); return; }
+    PanelHint("元のモデルのボーンの動きを、先のモデルのどのボーンに入れるかを決めます。自動は名前で対応させた結果です");
+    bool srcOk = false, dstOk = false;
+    for (int r : m_scene.roots) { if (r == m_combineSrc) srcOk = true; if (r == m_combineDst) dstOk = true; }
+    if (!srcOk || !dstOk || m_combineSrc == m_combineDst) {
+        ImGui::TextDisabled("モデルパネルの「結合」で、元 (使う側) と先 (受け取る側) のモデルを選んでください");
+        ImGui::End();
+        return;
+    }
+    ImGui::Text("元: %s  →  先: %s", m_scene.nodes[m_combineSrc].name.c_str(), m_scene.nodes[m_combineDst].name.c_str());
+    auto autoMap = Ops::AutoBoneMap(m_scene, m_combineSrc, m_combineDst);
+    auto dstSub = Ops::SubtreeMask(m_scene, m_combineDst);
+    auto& map = m_retarget.boneMap;
+    auto findManual = [&](const std::string& src) -> std::pair<std::string, std::string>* {
+        for (auto& p : map) if (p.first == src) return &p;
+        return nullptr;
+    };
+    int matched = 0;
+    for (auto& [s, d] : autoMap) {
+        auto* m = findManual(m_scene.nodes[s].name);
+        if (m ? !m->second.empty() : d >= 0) ++matched;
+    }
+    ImGui::TextDisabled("ボーン %zu 本のうち %d 本に入れ先があります", autoMap.size(), matched);
+    ImGui::Checkbox("一覧に無いボーンは名前で自動対応", &m_retarget.autoMatch);
+    if (ImGui::Button("手で決めた対応をすべて消す")) map.clear();
+    SameLineIfFits("自動の結果を手の対応にする");
+    if (ImGui::Button("自動の結果を手の対応にする")) {
+        map.clear();
+        for (auto& [s, d] : autoMap) map.push_back({ m_scene.nodes[s].name, d >= 0 ? m_scene.nodes[d].name : std::string() });
+    }
+    SameLineIfFits("保存...");
+    if (ImGui::Button("保存...")) {
+        std::string p = Dialogs::SaveFile("Text\0*.txt\0", "bonemap.txt", ".txt", "ボーンの対応を保存");
+        if (!p.empty()) {
+            std::string s;
+            for (auto& [a, b] : map) s += a + "=" + b + "\n";
+            FileUtil::WriteText(p, s);
+            LOG_INFO("ボーンの対応 %zu 本を保存しました: %s", map.size(), p.c_str());
+        }
+    }
+    SameLineIfFits("読み込み...");
+    if (ImGui::Button("読み込み...")) {
+        std::string p = Dialogs::OpenFile("Text\0*.txt\0", "ボーンの対応を読み込む");
+        std::vector<uint8_t> data;
+        if (!p.empty() && FileUtil::ReadBinary(p, data)) {
+            map.clear();
+            std::string all(data.begin(), data.end()), line;
+            for (size_t i = 0; i <= all.size(); ++i) {
+                if (i == all.size() || all[i] == '\n') {
+                    if (!line.empty() && line.back() == '\r') line.pop_back();
+                    size_t eq = line.find('=');
+                    if (eq != std::string::npos) map.push_back({ line.substr(0, eq), line.substr(eq + 1) });
+                    line.clear();
+                } else {
+                    line += all[i];
+                }
+            }
+            LOG_INFO("ボーンの対応 %zu 本を読み込みました", map.size());
+        }
+    }
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##bmFilter", "ボーン名で絞り込み", &m_boneMapFilter);
+    std::string f = m_boneMapFilter;
+    for (auto& c : f) c = (char)std::tolower((unsigned char)c);
+
+    if (ImGui::BeginTable("##bonemap", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable)) {
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn("元のボーン", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("入れ先のボーン", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("状態", ImGuiTableColumnFlags_WidthFixed, Px(64));
+        ImGui::TableHeadersRow();
+        for (auto& [s, d] : autoMap) {
+            const std::string& sn = m_scene.nodes[s].name;
+            if (!f.empty()) {
+                std::string l = sn;
+                for (auto& c : l) c = (char)std::tolower((unsigned char)c);
+                if (l.find(f) == std::string::npos) continue;
+            }
+            ImGui::PushID(s);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(sn.c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", m_scene.NodePath(s).c_str());
+            ImGui::TableNextColumn();
+            auto* m = findManual(sn);
+            std::string cur = m ? (m->second.empty() ? "(使わない)" : m->second) : (d >= 0 ? m_scene.nodes[d].name : (m_retarget.autoMatch ? "(見つからない)" : "(使わない)"));
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::BeginCombo("##dst", cur.c_str(), ImGuiComboFlags_HeightLarge)) {
+                if (ImGui::Selectable("(自動: 名前で対応)", !m)) map.erase(std::remove_if(map.begin(), map.end(), [&](auto& p) { return p.first == sn; }), map.end());
+                if (ImGui::Selectable("(使わない)", m && m->second.empty())) {
+                    if (m) m->second.clear();
+                    else map.push_back({ sn, std::string() });
+                }
+                ImGui::Separator();
+                for (int i = 0; i < (int)dstSub.size(); ++i) {
+                    if (!dstSub[i] || i == m_combineDst) continue;
+                    ImGui::PushID(i);
+                    bool selected = m ? m->second == m_scene.nodes[i].name : i == d;
+                    if (ImGui::Selectable(m_scene.nodes[i].name.c_str(), selected)) {
+                        auto* mm = findManual(sn);
+                        if (mm) mm->second = m_scene.nodes[i].name;
+                        else map.push_back({ sn, m_scene.nodes[i].name });
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::TableNextColumn();
+            m = findManual(sn);
+            if (m) ImGui::TextColored(ImVec4(1, 0.8f, 0.4f, 1), m->second.empty() ? "使わない" : "手動");
+            else if (d >= 0) ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1), "自動");
+            else ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "なし");
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    ImGui::End();
 }

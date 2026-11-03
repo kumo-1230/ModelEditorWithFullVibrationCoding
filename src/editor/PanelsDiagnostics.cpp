@@ -380,10 +380,10 @@ void Editor::DrawDiagnostics() {
                 const ImGuiTableFlags tf = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp;
                 if (ImGui::BeginTable("joints", 4, tf, ImVec2(0, ImGui::GetContentRegionAvail().y))) {
                     ImGui::TableSetupScrollFreeze(0, 1);
-                    ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 40);
+                    ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, Px(40));
                     ImGui::TableSetupColumn("ジョイント");
-                    ImGui::TableSetupColumn("頂点数", ImGuiTableColumnFlags_WidthFixed, 80);
-                    ImGui::TableSetupColumn("スケール", ImGuiTableColumnFlags_WidthFixed, 160);
+                    ImGui::TableSetupColumn("頂点数", ImGuiTableColumnFlags_WidthFixed, Px(80));
+                    ImGui::TableSetupColumn("スケール", ImGuiTableColumnFlags_WidthFixed, Px(160));
                     ImGui::TableHeadersRow();
                     for (size_t j = 0; j < sk.joints.size(); ++j) {
                         int jn = sk.joints[j];

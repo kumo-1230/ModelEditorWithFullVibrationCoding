@@ -287,8 +287,32 @@ void Editor::NewScene() {
 }
 
 void Editor::OpenDialog() {
-    std::string path = Dialogs::OpenFile(ImportFileFilter(), "モデルを開く");
-    if (!path.empty()) StartImport(path, m_importMode);
+    // Ctrl / Shift で複数のファイルをまとめて選べる。置き換えモードでも 2 つ目からは追加にする
+    auto paths = Dialogs::OpenFiles(ImportFileFilter(), "モデルを開く (Ctrl / Shift で複数選択できます)");
+    for (size_t i = 0; i < paths.size(); ++i) StartImport(paths[i], i == 0 ? m_importMode : (m_importMode == 0 ? 1 : m_importMode));
+    if (paths.size() > 1) LOG_INFO("%zu 個のファイルを順に読み込みます", paths.size());
+}
+
+void Editor::ImportFolderDialog(bool recursive) {
+    std::string dir = Dialogs::PickFolder(recursive ? "読み込むフォルダ (サブフォルダも含む)" : "読み込むフォルダ");
+    if (dir.empty()) return;
+    std::vector<std::string> files;
+    std::error_code ec;
+    auto add = [&](const std::filesystem::directory_entry& e) {
+        if (!e.is_regular_file(ec)) return;
+        std::string p = FileUtil::FromPath(e.path());
+        if (IsSupportedModelExtension(FileUtil::LowerExt(p))) files.push_back(p);
+    };
+    if (recursive) {
+        for (auto& e : std::filesystem::recursive_directory_iterator(FileUtil::ToPath(dir), std::filesystem::directory_options::skip_permission_denied, ec)) add(e);
+    } else {
+        for (auto& e : std::filesystem::directory_iterator(FileUtil::ToPath(dir), ec)) add(e);
+    }
+    std::sort(files.begin(), files.end());
+    if (files.empty()) { LOG_WARN("'%s' に読み込めるモデルがありません", dir.c_str()); return; }
+    if (files.size() > 50 && !Dialogs::Confirm("まとめて読み込み", (std::to_string(files.size()) + " 個のファイルがあります。すべて読み込みますか?").c_str())) return;
+    for (auto& f : files) StartImport(f, 1);
+    LOG_INFO("フォルダ '%s' の %zu 個のファイルを順に読み込みます", dir.c_str(), files.size());
 }
 
 void Editor::OpenFile(const std::string& path, bool add) { StartImport(path, add ? 1 : 0); }
@@ -663,7 +687,7 @@ void Editor::Frame() {
     if (m_firstFrame) {
         ImGuiDockNode* node = ImGui::DockBuilderGetNode(dockId);
         if (!node || node->IsLeafNode()) m_resetLayout = true; // ini が無い初回
-        constexpr int kLayoutVersion = 3;                       // 2: Unity / Unreal Engine 風の配置 3: モデル・アニメーション編集パネルを追加
+        constexpr int kLayoutVersion = 4;                       // 2: Unity / Unreal Engine 風の配置 3: モデル・アニメーション編集パネルを追加
         if (m_layoutVersion < kLayoutVersion) { m_resetLayout = true; m_layoutVersion = kLayoutVersion; }
         m_firstFrame = false;
     }
@@ -695,7 +719,9 @@ void Editor::Frame() {
     if (m_panels.measure) DrawMeasure();
     if (m_panels.diagnostics) DrawDiagnostics();
     if (m_panels.models) DrawModels();
+    if (m_panels.boneMap) DrawBoneMap();
     if (m_panels.animEditor) DrawAnimEditor();
+    if (m_panels.curveEditor) DrawCurveEditor();
     if (m_panels.imguiDemo) ImGui::ShowDemoWindow(&m_panels.imguiDemo);
     if (m_panels.imguiMetrics) ImGui::ShowMetricsWindow(&m_panels.imguiMetrics);
     DrawImportingPopup();
@@ -741,6 +767,7 @@ void Editor::SetupDockLayout(unsigned dockId) {
     ImGui::DockBuilderDockWindow("###Stats", bottomRight);
     ImGui::DockBuilderDockWindow("###History", bottomRight);
     ImGui::DockBuilderDockWindow("###AnimEditor", bottomRight);
+    ImGui::DockBuilderDockWindow("###CurveEditor", bottomRight);
     ImGui::DockBuilderFinish(dockId);
     // 最初に前に出しておくタブ
     m_focusWindows.insert(m_focusWindows.begin(), { "###Inspector", "###Meshes", "###Animation", "###Viewport" });
@@ -804,6 +831,8 @@ void Editor::DrawMainMenu() {
         if (ImGui::MenuItem("新規シーン", "Ctrl+N")) NewScene();
         if (ImGui::MenuItem("読み込み (シーンに追加)...", "Ctrl+O")) { m_importMode = 1; OpenDialog(); }
         if (ImGui::MenuItem("開く (今のシーンを閉じてから)...")) { m_importMode = 0; OpenDialog(); m_importMode = 1; }
+        if (ImGui::MenuItem("フォルダからまとめて読み込み...")) ImportFolderDialog(false);
+        if (ImGui::MenuItem("フォルダからまとめて読み込み (サブフォルダも)...")) ImportFolderDialog(true);
         if (ImGui::MenuItem("アニメーションのみ取り込み (選んでいるモデルへ名前で対応付け)...")) {
             std::string p = Dialogs::OpenFile(ImportFileFilter(), "アニメーションを取り込む");
             if (!p.empty()) StartImport(p, 2);
@@ -932,7 +961,7 @@ void Editor::DrawMainMenu() {
         }
         ImGui::Separator();
         ImGui::TextDisabled("シーン");
-        ImGui::SetNextItemWidth(100);
+        ImGui::SetNextItemWidth(Px(100));
         ImGui::InputFloat("##unit", &m_unitScale, 0, 0, "%.6g");
         ImGui::SameLine();
         if (ImGui::MenuItem("シーン全体をスケール")) { Checkpoint("シーンスケール"); Ops::ScaleScene(m_scene, m_unitScale); MarkChanged(); FrameAll(); }
@@ -987,6 +1016,7 @@ void Editor::DrawMainMenu() {
         ImGui::MenuItem("モデル診断 (穴・裏返り・ウェイト・アニメーション)", nullptr, &m_panels.diagnostics);
         ImGui::MenuItem("モデル (一覧・結合・抜き取り)", nullptr, &m_panels.models);
         ImGui::MenuItem("アニメーション編集 (ドープシート)", nullptr, &m_panels.animEditor);
+        ImGui::MenuItem("カーブエディタ (グラフエディタ)", nullptr, &m_panels.curveEditor);
         ImGui::MenuItem("パネルの説明を表示", nullptr, &m_showPanelHints);
         ImGui::Separator();
         if (ImGui::BeginMenu("表示モード")) {
@@ -1499,6 +1529,48 @@ void Editor::SmokeTestStep() {
         for (auto is : m_issues) RevealIssue(is);
         LOG_INFO("[smoke] 検証のダブルクリック: %zu 件", m_issues.size());
         ApplyViewPreset(BuiltinPresets()[0]);
+    });
+    step(65, "カーブエディタ / ボーンの対応付け", [&] {
+        if (m_scene.Empty()) return;
+        ClearSelection();
+        Select(m_scene.roots[0]);
+        // 曲線にして (スプライン)、キーを打ち、表示するカーブを選ぶ。描画は次のフレーム
+        m_member.rev = 0;
+        Membership();
+        if (m_anim >= 0 && m_anim < (int)m_scene.animations.size()) {
+            Animation& a = m_scene.animations[m_anim];
+            Checkpoint("smoke curve");
+            for (auto& ch : a.channels) {
+                std::vector<int> keys;
+                for (int k = 0; k < (int)ch.times.size(); ++k) keys.push_back(k);
+                Ops::SetKeyTangents(ch, keys, Ops::TangentMode::Spline);
+                Ops::InsertKey(ch, a.duration * 0.5f);
+            }
+            m_ceCurves.clear();
+            for (int c = 0; c < (int)a.channels.size() && c < 3; ++c)
+                for (int k = 0; k < 3; ++k) m_ceCurves.insert((int64_t)c * 4 + k);
+            m_ceSel = { { 0, 0, 0 } };
+            m_ceFrameAll = true;
+            MarkChanged();
+            std::vector<Issue> bad;
+            for (auto& is : ValidateScene(m_scene))
+                if (is.category == "アニメーション" && is.severity == Severity::Error) bad.push_back(is);
+            if (!bad.empty()) { LOG_ERROR("[smoke] 曲線にしたアニメーションが検証エラーになりました: %s", bad[0].message.c_str()); ++m_smokeErrors; }
+        }
+        m_panels.curveEditor = true;
+        // ボーンの対応付け: アニメーションだけを抜き出したモデル → 元のモデル
+        if (!m_scene.animations.empty()) {
+            int src = m_scene.roots[0];
+            ExtractFromActiveModel(true);
+            m_combineSrc = ActiveModel();
+            m_combineDst = src;
+            m_panels.boneMap = true;
+            auto map = Ops::AutoBoneMap(m_scene, m_combineSrc, m_combineDst);
+            int hits = 0;
+            for (auto& [s, d] : map) if (d >= 0) ++hits;
+            LOG_INFO("[smoke] ボーンの自動対応: %d / %zu", hits, map.size());
+            if (hits == 0 && !map.empty()) { LOG_ERROR("[smoke] 抜き出したアニメーションのボーンが元のモデルに対応しません"); ++m_smokeErrors; }
+        }
     });
     step(64, "ピック", [&] { m_pickRequested = true; m_pickPos = ImVec2(m_viewportPos.x + m_viewportSize.x * 0.5f, m_viewportPos.y + m_viewportSize.y * 0.5f); });
     step(66, "新規シーン", [&] { NewScene(); });

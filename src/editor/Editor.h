@@ -41,6 +41,7 @@ public:
     void EnableSmokeTest() { m_smokeTest = true; }
     void AddRulerAfterLoad(float heightMeters) { m_rulerAfterLoad = heightMeters; m_hasRulerAfterLoad = true; }
     int SmokeTestErrors() const { return m_smokeErrors; }
+    float UiScaleSetting() const { return m_uiScale; } // 環境設定の UI 倍率 (ウィンドウの大きさに合わせた係数とは別)
 
 private:
     // ---- 状態 -------------------------------------------------------------
@@ -86,6 +87,7 @@ private:
     bool m_viewportFocused = false;
     ImVec2 m_viewportPos{ 0, 0 };
     ImVec2 m_viewportSize{ 1, 1 };
+    float m_vpToolbarH = 0.0f;      // ビューポート左上の表示ツールバーの高さ (折り返し込み)
     bool m_pickRequested = false;
     ImVec2 m_pickPos;
     bool m_showBoneNames = false;
@@ -151,6 +153,22 @@ private:
     bool IssueInActiveModel(const Issue& is); // 検証結果が選んでいるモデルのものか
     void RevealIssue(const Issue& is);        // 検証の行をダブルクリック: 関連するパネルと確認用の表示を開く
     void DrawAnimEditor();                    // アニメーション編集 (Maya のタイムライン / ドープシート相当)
+    // カーブエディタ (Maya のグラフエディタ相当)
+    void DrawCurveEditor();
+    struct CurveView;
+    struct CurveKey { int channel = -1, comp = 0, key = -1; };
+    struct CurveOrig { CurveKey key; float time = 0; glm::vec4 value{ 0 }; glm::vec3 euler{ 0 }; };
+    float CurveKeyValue(const Animation& a, const CurveView& c, int k) const;
+    std::vector<CurveKey> m_ceSel;          // 選んだキー
+    std::vector<CurveOrig> m_ceOrig;        // ドラッグ開始時の値
+    std::set<int64_t> m_ceCurves;           // 表示するカーブ (チャンネル番号 * 4 + 成分)
+    int m_ceAnim = -1;
+    float m_ceT0 = 0, m_ceT1 = 1, m_ceV0 = -1, m_ceV1 = 1; // 表示範囲 (秒 / 値)
+    bool m_ceNormalize = false, m_ceSnap = true, m_ceFrameAll = true, m_ceFrameSel = false;
+    int m_ceDrag = 0;                       // 1=キー移動 2=矩形選択 3=パン 4=再生位置 5=接線 6=ズーム
+    int m_ceAxisLock = 0, m_ceHandleCurve = -1, m_ceHandleKey = -1;
+    ImVec2 m_ceMoveStart{ 0, 0 }, m_ceBoxStart{ 0, 0 };
+    std::string m_ceFilter;
     // アニメーション編集の状態
     float m_rangeIn = 0.0f, m_rangeOut = 0.0f; // 範囲 (秒)
     int m_rangeAnim = -1;
@@ -163,6 +181,8 @@ private:
     int m_boundsModel = -2;
     void DrawModelFilterBar();
     void DrawModels();
+    void DrawBoneMap();             // ボーンの対応付け (元のどのボーンの動きを先のどのボーンに入れるか)
+    std::string m_boneMapFilter;
     void ExtractFromActiveModel(bool animationOnly);
     int m_combineSrc = -1, m_combineDst = -1, m_attachNode = -1;
     std::string m_attachFilter, m_combineReport;
@@ -226,6 +246,8 @@ private:
         bool diagnostics = true;
         bool models = true;
         bool animEditor = true;
+        bool curveEditor = true;
+        bool boneMap = false;
     } m_panels;
 public:
     // 表示プリセット (表示の設定 + 開くパネル + 確認用の線)
@@ -253,6 +275,7 @@ private:
     // その他 UI 状態
     std::vector<std::string> m_recent;
     std::string m_hierarchyFilter;
+    float m_hierRowH = 0.0f;        // 階層の 1 行の高さ (画面外の行を描かずに高さだけ確保するカリング用)
     std::string m_consoleFilter;
     bool m_consoleShow[4] = { true, true, true, true };
     bool m_consoleAutoScroll = true;
@@ -343,6 +366,7 @@ private:
     // ファイル
     void NewScene();
     void OpenDialog();
+    void ImportFolderDialog(bool recursive); // フォルダの中のモデルをまとめて読み込む
     void StartImport(const std::string& path, int mode);
     void FinishImport(ImportResult& r);
     void ExportDialog();

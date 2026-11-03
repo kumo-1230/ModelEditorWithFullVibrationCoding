@@ -35,7 +35,13 @@ struct RetargetOptions {
     bool rootTranslation = true;  // 一番上の動くボーン (腰) の移動キーをコピー (身長の比で拡大縮小)
     bool otherTranslations = false; // それ以外のボーンの移動キーもコピー (同じ体型のときだけ)
     bool scaleKeys = false;       // スケールキーもコピー
+    // 手で決めたボーンの対応 (元のボーン名 → 先のボーン名)。先が空なら、そのボーンの動きは使わない。
+    // ここに無いボーンは autoMatch のとき名前で自動的に対応させる
+    std::vector<std::pair<std::string, std::string>> boneMap;
+    bool autoMatch = true;
 };
+// 名前での自動対応: 元のモデルのボーン (動くノードとジョイント) ごとに、先のモデルの対応するノード (無ければ -1)
+std::vector<std::pair<int, int>> AutoBoneMap(const Scene& scene, int srcModel, int dstModel);
 struct RetargetReport {
     int animations = 0;
     int matchedBones = 0;
@@ -52,6 +58,18 @@ int MergeModels(Scene& scene, int srcModel, int dstModel);
 
 // ---- アニメーション編集 -----------------------------------------------------
 glm::vec4 SampleChannel(const AnimChannel& ch, float t);
+glm::vec4 ChannelDerivative(const AnimChannel& ch, float t); // 時間微分 (1 秒あたり)
+// t にキーを入れる (曲線の形は変えない: 値と傾きをその時刻の曲線から取る)。キーの番号を返す (既にあればその番号)
+int InsertKey(AnimChannel& ch, float t);
+void EraseKey(AnimChannel& ch, int k);
+// 曲線 (CubicSpline) を fps 刻みの直線キーにする (曲線を扱えない処理・形式の前に使う)
+void LinearizeChannel(AnimChannel& ch, float fps = 30.0f);
+void LinearizeAnimation(Animation& anim, float fps = 30.0f);
+// 直線 / ステップのチャンネルを、形を変えずに曲線 (接線付き) にする
+void MakeCubic(AnimChannel& ch);
+// キーの接線の種類 (Maya と同じ名前)。Step はチャンネル全体に効く
+enum class TangentMode { Spline, Clamped, Linear, Flat, Step };
+void SetKeyTangents(AnimChannel& ch, const std::vector<int>& keys, TangentMode mode);
 // t0〜t1 だけを残し、0 秒始まりにする (範囲の端にはその時刻の値でキーを打つ)
 void TrimAnimation(Animation& anim, float t0, float t1);
 // t0〜t1 を削除して後ろを詰める

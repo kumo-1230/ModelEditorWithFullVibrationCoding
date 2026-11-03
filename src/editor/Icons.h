@@ -2,6 +2,8 @@
 // UI のアイコン (Windows の Segoe Fluent Icons / Segoe MDL2 Assets を本文フォントに合成して使う)。
 // アイコンフォントが無い環境では Icons::loaded が false になり、IconText は文字だけを返す。
 #include <imgui.h>
+#include <cmath>
+#include <cstring>
 #include <string>
 
 namespace Icons {
@@ -58,6 +60,38 @@ inline ImFont* large = nullptr; // 見出し用の大きいフォント (無け�
 #define ICON_NORMALS    ""
 #define ICON_WIRE       ""
 #define ICON_IMPORT     ""
+
+// 固定の大きさ (基準の 15px フォントで決めた値) を、今の UI の大きさに合わせる
+inline float Px(float v) { return std::round(v * ImGui::GetFontSize() / 15.0f); }
+
+// 長い文字 (ファイルパスなど) を 1 行に収める。入りきらなければ先頭を「…」で省略して末尾 (ファイル名) を残し、
+// マウスを乗せると全文を出す (狭いパネルで 1 文字ずつ縦に折り返されないようにする)
+inline void EllipsisText(const char* prefix, const std::string& text, bool disabled = false) {
+    std::string full = std::string(prefix ? prefix : "") + text;
+    float avail = ImGui::GetContentRegionAvail().x;
+    std::string shown = full;
+    if (ImGui::CalcTextSize(full.c_str()).x > avail && avail > 0.0f) {
+        const std::string head = std::string(prefix ? prefix : "") + "…";
+        // 末尾から入るだけ残す (UTF-8 の文字の途中で切らない)
+        size_t cut = prefix ? strlen(prefix) : 0;
+        while (cut < full.size()) {
+            do { ++cut; } while (cut < full.size() && (static_cast<unsigned char>(full[cut]) & 0xC0) == 0x80);
+            shown = head + full.substr(cut);
+            if (ImGui::CalcTextSize(shown.c_str()).x <= avail) break;
+        }
+    }
+    if (disabled) ImGui::TextDisabled("%s", shown.c_str());
+    else ImGui::TextUnformatted(shown.c_str());
+    if (shown != full && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", full.c_str());
+}
+
+// 次のボタン (label) が今の行の残りに入るなら同じ行に、入らなければ次の行に置く (狭いパネルで枠外にはみ出さない)
+inline void SameLineIfFits(const char* nextLabel) {
+    const ImGuiStyle& st = ImGui::GetStyle();
+    float w = ImGui::CalcTextSize(nextLabel, nullptr, true).x + st.FramePadding.x * 2;
+    float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+    if (ImGui::GetItemRectMax().x + st.ItemSpacing.x + w <= right) ImGui::SameLine();
+}
 
 // "アイコン 文字" (アイコンが無ければ文字だけ)
 inline std::string IconText(const char* icon, const char* text) {

@@ -606,6 +606,8 @@ bool ExportWithAssimp(const Scene& sceneIn, const std::string& path, const Expor
     if (!id) { err = "Assimp では未対応の形式です"; return false; }
 
     Scene scene = sceneIn;
+    // Assimp の書き出しは直線キーだけを扱うので、曲線 (カーブエディタで作ったもの) は curveBakeFps 刻みのキーにする
+    for (auto& a : scene.animations) Ops::LinearizeAnimation(a, opts.curveBakeFps);
     // ボーンを持てない形式は、画面に表示しているレストポーズの形で頂点に焼き込む
     // (焼き込まないと、レストポーズとバインドポーズが違うモデルでは別の姿勢で書き出される)
     const bool staticFormat = opts.format == ExportFormat::OBJ || opts.format == ExportFormat::STL || opts.format == ExportFormat::PLY ||

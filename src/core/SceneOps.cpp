@@ -77,6 +77,16 @@ void OffsetNodeTRS(Scene& scene, int nodeIdx, const glm::vec3& dT, const glm::qu
                     v = glm::vec4(glm::vec3(v) * sMul, 0.0f);
                 }
             }
+            // 曲線の接線: 移動の足し算は傾きを変えない。回転・拡大は値と同じ掛け算
+            for (auto* tans : { &ch.inTangents, &ch.outTangents })
+                for (auto& d : *tans) {
+                    if (ch.path == AnimPath::Rotation && hasR) {
+                        glm::quat q = dR * glm::quat(d.w, d.x, d.y, d.z);
+                        d = glm::vec4(q.x, q.y, q.z, q.w);
+                    } else if (ch.path == AnimPath::Scale && hasS) {
+                        d = glm::vec4(glm::vec3(d) * sMul, 0.0f);
+                    }
+                }
         }
 }
 
@@ -124,6 +134,18 @@ static void PremultiplyChildTransform(Scene& scene, int child, const glm::mat4& 
                     v = glm::vec4(glm::vec3(v) * u, 0);
                 }
             }
+            // 曲線の接線 (傾き) には移動 xt は効かない
+            for (auto* tans : { &ch.inTangents, &ch.outTangents })
+                for (auto& d : *tans) {
+                    if (ch.path == AnimPath::Translation) {
+                        d = glm::vec4(xr * (glm::vec3(d) * u), 0);
+                    } else if (ch.path == AnimPath::Rotation) {
+                        glm::quat q = xr * glm::quat(d.w, d.x, d.y, d.z);
+                        d = glm::vec4(q.x, q.y, q.z, q.w);
+                    } else {
+                        d = glm::vec4(glm::vec3(d) * u, 0);
+                    }
+                }
         }
     }
 }
@@ -218,7 +240,7 @@ bool ApplyUniformScaleToHierarchy(Scene& scene, int nodeIdx, std::string* err) {
     for (auto& anim : scene.animations)
         for (auto& ch : anim.channels)
             if (ch.node >= 0 && ch.node != nodeIdx && inSub[ch.node] && ch.path == AnimPath::Translation)
-                for (auto& v : ch.values) v = glm::vec4(glm::vec3(v) * f, 0);
+                for (auto* arr : { &ch.values, &ch.inTangents, &ch.outTangents }) for (auto& v : *arr) v = glm::vec4(glm::vec3(v) * f, 0); // 値と曲線の接線
 
     // 非スキンメッシュ (ノード自身と子孫) の頂点をスケール
     glm::mat4 S = glm::scale(glm::mat4(1), glm::vec3(f));
@@ -397,7 +419,7 @@ void ScaleScene(Scene& scene, float f) {
     for (auto& a : scene.animations)
         for (auto& ch : a.channels)
             if (ch.path == AnimPath::Translation)
-                for (auto& v : ch.values) v = glm::vec4(glm::vec3(v) * f, 0);
+                for (auto* arr : { &ch.values, &ch.inTangents, &ch.outTangents }) for (auto& v : *arr) v = glm::vec4(glm::vec3(v) * f, 0); // 値と曲線の接線
     LOG_INFO("シーン全体を %.6g 倍しました", f);
 }
 
@@ -997,8 +1019,11 @@ int CreatePrimitive(Scene& scene, int type, float size, int parent) {
 
 void ScaleAnimationSpeed(Animation& anim, float speed) {
     if (!(speed > 0.0f)) return;
-    for (auto& c : anim.channels)
+    for (auto& c : anim.channels) {
         for (auto& t : c.times) t /= speed;
+        // 曲線の接線は 1 秒あたりの変化なので、速くした分だけ大きくなる
+        for (auto* tans : { &c.inTangents, &c.outTangents }) for (auto& d : *tans) d *= speed;
+    }
     anim.RecomputeDuration();
 }
 

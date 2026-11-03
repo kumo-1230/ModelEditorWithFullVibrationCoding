@@ -23,13 +23,13 @@ void Editor::DrawMeshes() {
         const auto& M = Membership();
         for (int i = 0; i < (int)m_scene.meshes.size(); ++i) if (InMask(M.meshes, i)) rows.push_back(i);
     }
-    float listH = std::min(220.0f, ImGui::GetContentRegionAvail().y * 0.4f);
+    float listH = std::min(Px(220), ImGui::GetContentRegionAvail().y * 0.4f);
     if (ImGui::BeginTable("meshlist", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable, ImVec2(0, listH))) {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("名前", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("頂点", ImGuiTableColumnFlags_WidthFixed, 60);
-        ImGui::TableSetupColumn("三角形", ImGuiTableColumnFlags_WidthFixed, 60);
-        ImGui::TableSetupColumn("使用", ImGuiTableColumnFlags_WidthFixed, 36);
+        ImGui::TableSetupColumn("頂点", ImGuiTableColumnFlags_WidthFixed, Px(60));
+        ImGui::TableSetupColumn("三角形", ImGuiTableColumnFlags_WidthFixed, Px(60));
+        ImGui::TableSetupColumn("使用", ImGuiTableColumnFlags_WidthFixed, Px(36));
         ImGui::TableHeadersRow();
         ImGuiListClipper clip;
         clip.Begin((int)rows.size());
@@ -92,7 +92,7 @@ void Editor::DrawMeshes() {
     if (mesh.primitives.empty()) { ImGui::End(); return; }
     m_selPrim = std::clamp(m_selPrim, 0, (int)mesh.primitives.size() - 1);
     if (mesh.primitives.size() > 1) {
-        ImGui::SetNextItemWidth(120);
+        ImGui::SetNextItemWidth(Px(120));
         ImGui::SliderInt("プリミティブ", &m_selPrim, 0, (int)mesh.primitives.size() - 1);
     }
     Primitive& p = mesh.primitives[m_selPrim];
@@ -137,7 +137,7 @@ void Editor::DrawPrimitiveTools(int meshIdx, int primIdx) {
         mesh.Touch();
         MarkChanged();
     };
-    ImGui::SetNextItemWidth(120);
+    ImGui::SetNextItemWidth(Px(120));
     ImGui::SliderFloat("スムーズ角度", &m_normalAngle, 0.0f, 180.0f, "%.0f°");
     if (ImGui::Button("法線を再計算 (スムーズ)")) apply("法線再計算", [&](Primitive& p) { Ops::RecalculateNormals(p, true, m_normalAngle); if (p.HasTangents()) Ops::GenerateTangents(p); });
     ImGui::SameLine();
@@ -155,7 +155,7 @@ void Editor::DrawPrimitiveTools(int meshIdx, int primIdx) {
     if (ImGui::Button("接線を削除")) apply("接線削除", [](Primitive& p) { p.tangents.clear(); });
     ImGui::SameLine();
     if (ImGui::Button("頂点カラー削除")) apply("頂点カラー削除", [](Primitive& p) { p.colors.clear(); });
-    ImGui::SetNextItemWidth(120);
+    ImGui::SetNextItemWidth(Px(120));
     ImGui::InputFloat("結合距離", &m_weldEps, 0, 0, "%.6g");
     ImGui::SameLine();
     if (ImGui::Button("頂点を結合")) apply("頂点結合", [&](Primitive& p) { int n = Ops::WeldVertices(p, m_weldEps); LOG_INFO("%d 頂点を結合しました", n); });
@@ -163,7 +163,7 @@ void Editor::DrawPrimitiveTools(int meshIdx, int primIdx) {
     if (mesh.HasSkin()) {
         ImGui::SeparatorText("スキンウェイト");
         if (ImGui::Button("ウェイトを正規化")) apply("ウェイト正規化", [](Primitive& p) { LOG_INFO("%d 頂点を正規化", Ops::NormalizeWeights(p)); });
-        ImGui::SetNextItemWidth(100);
+        ImGui::SetNextItemWidth(Px(100));
         ImGui::InputFloat("閾値", &m_pruneThreshold, 0, 0, "%.4f");
         ImGui::SameLine();
         if (ImGui::Button("小さいウェイトを除去")) apply("ウェイト除去", [&](Primitive& p) { LOG_INFO("%d 個のウェイトを除去", Ops::PruneWeights(p, m_pruneThreshold)); });
@@ -216,15 +216,23 @@ void Editor::DrawMaterials() {
         MarkChanged();
     }
 
-    float listH = std::min(180.0f, ImGui::GetContentRegionAvail().y * 0.35f);
+    float listH = std::min(Px(180), ImGui::GetContentRegionAvail().y * 0.35f);
     ImGui::BeginChild("matlist", ImVec2(0, listH), ImGuiChildFlags_Borders);
     const auto matMask = Membership().materials;
     for (int i = 0; i < (int)m_scene.materials.size(); ++i) {
         if (!InMask(matMask, i)) continue;
         const Material& m = m_scene.materials[i];
         ImGui::PushID(i);
+        // カリング: 見えていない行は高さだけ確保する
+        const float rowH = ImGui::GetTextLineHeight();
+        const ImVec2 cp = ImGui::GetCursorScreenPos();
+        if (!ImGui::IsRectVisible(cp, ImVec2(cp.x + 1.0f, cp.y + rowH))) {
+            ImGui::Dummy(ImVec2(1.0f, rowH));
+            ImGui::PopID();
+            continue;
+        }
         ImVec4 c(m.baseColor.r, m.baseColor.g, m.baseColor.b, 1);
-        ImGui::ColorButton("##c", c, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoAlpha, ImVec2(14, 14));
+        ImGui::ColorButton("##c", c, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoAlpha, ImVec2(rowH, rowH));
         ImGui::SameLine();
         int texCount = 0;
         for (auto& s : m.slots) if (s.Valid()) ++texCount;
@@ -272,7 +280,7 @@ bool Editor::DrawTextureSlot(Material& m, int slot) {
     ImGui::BeginGroup();
     ImGui::Text("%s", TexSlotName(slot));
     const char* cur = s.texture >= 0 && s.texture < (int)m_scene.textures.size() ? m_scene.textures[s.texture].name.c_str() : "(なし)";
-    ImGui::SetNextItemWidth(160);
+    ImGui::SetNextItemWidth(Px(160));
     if (ImGui::BeginCombo("##tex", cur)) {
         if (ImGui::Selectable("(なし)", s.texture < 0)) { Checkpoint("テクスチャ解除"); s.texture = -1; changed = true; }
         for (int t = 0; t < (int)m_scene.textures.size(); ++t) {
@@ -295,7 +303,7 @@ bool Editor::DrawTextureSlot(Material& m, int slot) {
     if (s.texture >= 0) {
         ImGui::SameLine();
         if (ImGui::SmallButton("×")) { Checkpoint("テクスチャ解除"); s.texture = -1; changed = true; }
-        ImGui::SetNextItemWidth(60);
+        ImGui::SetNextItemWidth(Px(60));
         int uv = s.uvSet;
         if (ImGui::Combo("UV", &uv, "UV0\0UV1\0")) { Checkpoint("UVセット"); s.uvSet = uv; changed = true; }
     }
@@ -383,9 +391,9 @@ void Editor::DrawTextures() {
     }
 
     // サムネイル一覧
-    float listH = std::min(200.0f, ImGui::GetContentRegionAvail().y * 0.4f);
+    float listH = std::min(Px(200), ImGui::GetContentRegionAvail().y * 0.4f);
     ImGui::BeginChild("texgrid", ImVec2(0, listH), ImGuiChildFlags_Borders);
-    float cell = 72.0f;
+    float cell = Px(72);
     int cols = std::max(1, (int)(ImGui::GetContentRegionAvail().x / (cell + 8)));
     const auto texMask = Membership().textures;
     int shown = 0;
@@ -394,6 +402,13 @@ void Editor::DrawTextures() {
         const Texture& t = m_scene.textures[i];
         ImGui::PushID(i);
         if (shown++ % cols) ImGui::SameLine();
+        // カリング: 見えていないサムネイルは描かない (GPU へのテクスチャ作成もしない)
+        const ImVec2 cellSize(cell + ImGui::GetStyle().FramePadding.x * 2, cell + ImGui::GetStyle().FramePadding.y * 2 + ImGui::GetTextLineHeightWithSpacing());
+        if (!ImGui::IsRectVisible(ImGui::GetCursorScreenPos(), ImVec2(ImGui::GetCursorScreenPos().x + cellSize.x, ImGui::GetCursorScreenPos().y + cellSize.y))) {
+            ImGui::Dummy(cellSize);
+            ImGui::PopID();
+            continue;
+        }
         ImGui::BeginGroup();
         ImTextureID id = TexId(i);
         bool sel = m_selTexture == i;
@@ -410,7 +425,15 @@ void Editor::DrawTextures() {
             ImGui::Text("%s", t.name.c_str());
             ImGui::EndDragDropSource();
         }
-        std::string nm = t.name.size() > 10 ? t.name.substr(0, 9) + "…" : t.name;
+        // 名前はサムネイルの幅に収まるように省略する (UTF-8 の文字の途中では切らない)
+        std::string nm = t.name;
+        if (ImGui::CalcTextSize(nm.c_str()).x > cellSize.x) {
+            while (!nm.empty() && ImGui::CalcTextSize((nm + "…").c_str()).x > cellSize.x) {
+                while (!nm.empty() && (static_cast<unsigned char>(nm.back()) & 0xC0) == 0x80) nm.pop_back(); // 続きのバイト
+                if (!nm.empty()) nm.pop_back();                                                               // 先頭のバイト
+            }
+            nm += "…";
+        }
         ImGui::TextColored(t.missing ? ImVec4(1, 0.4f, 0.4f, 1) : ImVec4(0.8f, 0.8f, 0.8f, 1), "%s", nm.c_str());
         ImGui::EndGroup();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n%dx%d %s", t.name.c_str(), t.Width(), t.Height(), t.mimeType.c_str());
@@ -423,7 +446,7 @@ void Editor::DrawTextures() {
     ImGui::SetNextItemWidth(-60);
     EditValue("テクスチャ名", t.name, [&] { return ImGui::InputText("名前##tex", &t.name); });
     ImGui::Text("%d x %d  %s  %s", t.Width(), t.Height(), t.mimeType.c_str(), t.embedded ? "(埋め込み)" : "");
-    if (!t.sourcePath.empty()) ImGui::TextWrapped("パス: %s", t.sourcePath.c_str());
+    if (!t.sourcePath.empty()) EllipsisText("パス: ", t.sourcePath);
     if (!t.originalUri.empty()) ImGui::TextDisabled("元の参照: %s", t.originalUri.c_str());
     if (t.missing) ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "ファイルが見つかりません。「置き換え」または「再リンク」してください");
 
@@ -469,10 +492,10 @@ void Editor::DrawTextures() {
     int wrapS = t.wrapS == WrapMode::Repeat ? 0 : t.wrapS == WrapMode::ClampToEdge ? 1 : 2;
     int wrapT = t.wrapT == WrapMode::Repeat ? 0 : t.wrapT == WrapMode::ClampToEdge ? 1 : 2;
     static const WrapMode modes[] = { WrapMode::Repeat, WrapMode::ClampToEdge, WrapMode::MirroredRepeat };
-    ImGui::SetNextItemWidth(120);
+    ImGui::SetNextItemWidth(Px(120));
     if (EditValue("ラップ S", wrapS, [&] { return ImGui::Combo("ラップ S", &wrapS, "Repeat\0Clamp\0Mirror\0"); })) { t.wrapS = modes[wrapS]; t.uid = NewUid(); }
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(120);
+    ImGui::SetNextItemWidth(Px(120));
     if (EditValue("ラップ T", wrapT, [&] { return ImGui::Combo("ラップ T", &wrapT, "Repeat\0Clamp\0Mirror\0"); })) { t.wrapT = modes[wrapT]; t.uid = NewUid(); }
     if (EditValue("フィルタ", t.linearFilter, [&] { return ImGui::Checkbox("リニアフィルタ", &t.linearFilter); })) t.uid = NewUid();
     ImGui::SameLine();
@@ -486,10 +509,10 @@ void Editor::DrawTextures() {
     ImGui::TextWrapped("使用: %s", usedBy.empty() ? "なし" : usedBy.c_str());
 
     // プレビュー (チャンネル別)
-    ImGui::SetNextItemWidth(200);
+    ImGui::SetNextItemWidth(Px(200));
     ImGui::Combo("チャンネル", &m_texChannel, "RGBA\0R\0G\0B\0A (グレー表示は非対応・アルファ値として表示)\0");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(120);
+    ImGui::SetNextItemWidth(Px(120));
     ImGui::SliderFloat("ズーム", &m_texZoom, 0.1f, 4.0f);
     ImTextureID id = TexId(m_selTexture);
     if (id && t.Width() > 0) {
@@ -526,7 +549,7 @@ void Editor::DrawTextures() {
 // UV ビューア
 // ---------------------------------------------------------------------------
 void Editor::DrawUVViewer() {
-    ImGui::SetNextWindowSize(ImVec2(520, 560), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(Px(520), Px(560)), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin(PanelTitle(ICON_GRID, "UV ビューア", "UVViewer").c_str(), &m_panels.uvViewer)) { ImGui::End(); return; }
     if (m_selMesh < 0 || m_selMesh >= (int)m_scene.meshes.size()) {
         ImGui::TextDisabled("メッシュを選択してください");
@@ -539,7 +562,7 @@ void Editor::DrawUVViewer() {
     static bool showOutOfRange = true;
     ImGui::Text("%s", mesh.name.c_str());
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(80);
+    ImGui::SetNextItemWidth(Px(80));
     ImGui::Combo("##uvset", &uvSet, "UV0\0UV1\0");
     ImGui::SameLine();
     ImGui::Checkbox("テクスチャ", &showTex);

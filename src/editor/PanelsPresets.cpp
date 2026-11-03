@@ -37,7 +37,7 @@ static std::vector<Field> PresetFields(Editor::ViewPreset& p) {
         { "p_animation", 'b', &pa.animation }, { "p_console", 'b', &pa.console }, { "p_validation", 'b', &pa.validation },
         { "p_stats", 'b', &pa.stats }, { "p_sceneinfo", 'b', &pa.sceneInfo }, { "p_history", 'b', &pa.history }, { "p_uv", 'b', &pa.uvViewer },
         { "p_measure", 'b', &pa.measure }, { "p_diagnostics", 'b', &pa.diagnostics }, { "p_models", 'b', &pa.models },
-        { "p_animeditor", 'b', &pa.animEditor },
+        { "p_animeditor", 'b', &pa.animEditor }, { "p_curveeditor", 'b', &pa.curveEditor },
     };
 }
 
@@ -127,7 +127,8 @@ const std::vector<Editor::ViewPreset>& Editor::BuiltinPresets() {
         p.rootPath = true;
         p.panels.animation = true;
         p.panels.animEditor = true;
-        p.focus = { "AnimEditor" };
+        p.panels.curveEditor = true;
+        p.focus = { "AnimEditor", "CurveEditor" };
         list.push_back(p);
     }
     {
@@ -248,7 +249,7 @@ void Editor::DrawPresetMenu() {
         SaveUserPresets();
     }
     ImGui::SeparatorText("今の表示を保存");
-    ImGui::SetNextItemWidth(200);
+    ImGui::SetNextItemWidth(Px(200));
     ImGui::InputTextWithHint("##presetName", "名前 (例: 自分用の確認)", &m_presetName);
     ImGui::SameLine();
     ImGui::BeginDisabled(m_presetName.empty());

@@ -60,6 +60,35 @@ std::string OpenFile(const char* filter, const char* title) {
     return {};
 }
 
+std::vector<std::string> OpenFiles(const char* filter, const char* title) {
+    std::vector<wchar_t> buf(32768, L'\0'); // 複数選択はフォルダ名 + ファイル名の並びになるので大きめに取る
+    std::wstring wf = WidenFilter(filter);
+    std::wstring wt = title ? Widen(title) : L"";
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = g_owner;
+    ofn.lpstrFilter = wf.empty() ? nullptr : wf.c_str();
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = (DWORD)buf.size();
+    ofn.lpstrTitle = title ? wt.c_str() : nullptr;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER | OFN_ALLOWMULTISELECT;
+    std::vector<std::string> out;
+    if (!GetOpenFileNameW(&ofn)) return out;
+    // 1 つだけなら完全なパス、複数なら「フォルダ\0ファイル1\0ファイル2\0\0」
+    std::wstring first(buf.data());
+    const wchar_t* p = buf.data() + first.size() + 1;
+    if (!*p) {
+        out.push_back(Narrow(first.c_str()));
+        return out;
+    }
+    while (*p) {
+        std::wstring name(p);
+        out.push_back(Narrow((first + L"\\" + name).c_str()));
+        p += name.size() + 1;
+    }
+    return out;
+}
+
 std::string SaveFile(const char* filter, const std::string& defaultName, const char* defExt, const char* title, const std::string& initialDir) {
     wchar_t buf[MAX_PATH * 4] = {};
     std::wstring wn = Widen(defaultName);
@@ -141,6 +170,7 @@ void OpenInExplorer(const std::string& path) {
 namespace Dialogs {
 void SetOwner(void*) {}
 std::string OpenFile(const char*, const char*) { return {}; }
+std::vector<std::string> OpenFiles(const char*, const char*) { return {}; }
 std::string SaveFile(const char*, const std::string&, const char*, const char*, const std::string&) { return {}; }
 std::string PickFolder(const char*) { return {}; }
 bool Confirm(const char*, const char*) { return true; }

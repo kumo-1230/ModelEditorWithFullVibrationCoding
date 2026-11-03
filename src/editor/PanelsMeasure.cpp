@@ -156,7 +156,7 @@ void Editor::DrawMeasure() {
             ImGui::Text("ファイルに記録された単位: 不明 (%s には単位情報がありません)", info.sourceFormat.c_str());
         if (info.sourceFormat == "FBX") ImGui::TextDisabled("FBX UnitScaleFactor = %g (1 単位 = %g cm)", info.unitScaleFactor, info.unitScaleFactor);
         int mu = std::clamp(info.modelUnit, 0, Unit_Count - 1);
-        ImGui::SetNextItemWidth(200);
+        ImGui::SetNextItemWidth(Px(200));
         if (ImGui::Combo("このモデルの単位", &mu, UnitComboItems())) ChangeModelUnit(mu);
         ImGui::TextWrapped("ファイルの 1 単位を「%s」として扱っています。サイズが合わない場合はここで正しい単位を選ぶと、実寸が再計算されます (Undo 可)。",
                            UnitName(info.modelUnit));
@@ -164,7 +164,7 @@ void Editor::DrawMeasure() {
             ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "※ ファイルの記録 (%s) と異なる単位で解釈しています", UnitSuffix(info.sourceUnit));
     }
 
-    ImGui::SetNextItemWidth(200);
+    ImGui::SetNextItemWidth(Px(200));
     ImGui::Combo("表示単位", &m_displayUnit, UnitComboItems());
     ImGui::SameLine();
     ImGui::Checkbox("ビューに実寸を表示", &m_showSizeOverlay);
@@ -199,10 +199,10 @@ void Editor::DrawMeasure() {
         }
 
         ImGui::SeparatorText("指定サイズにリサイズ");
-        ImGui::SetNextItemWidth(100);
+        ImGui::SetNextItemWidth(Px(100));
         ImGui::Combo("##axis", &m_targetAxis, "幅 (X)\0高さ (Y)\0奥行 (Z)\0");
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(120);
+        ImGui::SetNextItemWidth(Px(120));
         ImGui::InputFloat("##target", &m_targetSize, 0, 0, "%.4g");
         ImGui::SameLine();
         ImGui::TextUnformatted(UnitSuffix(m_displayUnit));
@@ -214,7 +214,7 @@ void Editor::DrawMeasure() {
         ImGui::TextDisabled("対象: %s (トランスフォームのスケールを変更します)", FitTargetLabel(false).c_str());
 
         ImGui::SeparatorText("倍率で拡大縮小");
-        ImGui::SetNextItemWidth(120);
+        ImGui::SetNextItemWidth(Px(120));
         ImGui::InputFloat("倍##factor", &m_scaleFactor, 0, 0, "%.6g");
         m_scaleFactor = std::max(m_scaleFactor, 1e-6f);
         ImGui::SameLine();

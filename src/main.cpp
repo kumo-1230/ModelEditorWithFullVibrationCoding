@@ -232,6 +232,9 @@ ImFont* AddUiFont(const std::string& fontsDir, float size, bool bold) {
 
 void LoadFonts(float scale) {
     ImGuiIO& io = ImGui::GetIO();
+    io.Fonts->Clear(); // 大きさを変えて作り直すとき用
+    Icons::loaded = false;
+    Icons::large = nullptr;
     wchar_t winDir[MAX_PATH] = L"C:\\Windows";
     GetWindowsDirectoryW(winDir, MAX_PATH);
     std::string fonts = Narrow(winDir) + "\\Fonts\\";
@@ -248,6 +251,7 @@ void LoadFonts(float scale) {
 
 // Unreal Engine 5 に近い配色: 落ち着いたグレーの濃淡で領域を分け、青は「選択中・オン」だけに使う
 void ApplyStyle(float scale) {
+    ImGui::GetStyle() = ImGuiStyle(); // ScaleAllSizes は掛け算なので、作り直すときは既定から始める
     ImGui::StyleColorsDark();
     ImGuiStyle& s = ImGui::GetStyle();
     s.WindowRounding = 0;
@@ -342,6 +346,19 @@ void ApplyStyle(float scale) {
     s.ScaleAllSizes(scale);
 }
 
+// UI の大きさ = DPI × 環境設定の倍率 × ウィンドウの大きさに合わせた係数。
+// 1600 x 900 (DPI 100% 換算) を基準に、ウィンドウが小さいほど文字とボタンを小さくして、パネルの枠内に収める
+float ComputeUiScale(HWND hwnd, float userScale) {
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    const float dpi = std::max(ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd), 0.5f);
+    const float w = (float)(rc.right - rc.left) / dpi, h = (float)(rc.bottom - rc.top) / dpi;
+    float fit = 1.0f;
+    if (w > 0 && h > 0) fit = std::clamp(std::min(w / 1600.0f, h / 900.0f), 0.6f, 1.0f);
+    float s = dpi * userScale * fit;
+    return std::round(s * 20.0f) / 20.0f; // 0.05 刻み (少しのリサイズで毎回作り直さない)
+}
+
 float ReadUiScaleSetting() {
     std::vector<uint8_t> data;
     if (FileUtil::ReadBinary(FileUtil::Join(FileUtil::AppDataDir(), "ModelEditor_settings.ini"), data)) {
@@ -403,6 +420,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     std::vector<std::string> openFiles; // 複数指定するとすべて読み込む (1 つ目で開き、残りは追加)
     std::vector<std::string> focusWindows;
     int screenshotFrames = 90, renderMode = -1;
+    int winW = 1600, winH = 900;            // --size W H: ウィンドウの大きさ (確認用)
+    float mouseX = -1.0f, mouseY = -1.0f;  // --mouse X Y: マウスをその位置に置いたことにする (ツールチップの確認用)
     bool playOnLoad = false, smoke = false, forceWarp = false, addRuler = false;
     float rulerHeight = 0.0f;
     for (size_t i = 1; i < args.size(); ++i) {
@@ -417,13 +436,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         else if (a == "--smoketest") smoke = true;
         else if (a == "--warp") forceWarp = true; // ソフトウェア描画を強制 (動作確認用)
         else if (a == "--ruler") { rulerHeight = (float)atof(next().c_str()); addRuler = true; }
+        else if (a == "--size") { winW = atoi(next().c_str()); winH = atoi(next().c_str()); }
+        else if (a == "--mouse") { mouseX = (float)atof(next().c_str()); mouseY = (float)atof(next().c_str()); }
         else if (!a.empty() && a[0] != '-') openFiles.push_back(a);
     }
 
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, hInstance, LoadIconW(nullptr, IDI_APPLICATION),
                        LoadCursorW(nullptr, IDC_ARROW), nullptr, nullptr, L"ModelEditorWindow", nullptr };
     RegisterClassExW(&wc);
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"ModelEditor", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1600, 900,
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"ModelEditor", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, winW, winH,
                                 nullptr, nullptr, hInstance, nullptr);
     if (!hwnd) {
         Fatal("ウィンドウを作成できませんでした");
@@ -446,7 +467,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     static std::string iniPath = FileUtil::Join(FileUtil::AppDataDir(), "ModelEditor_imgui.ini");
     io.IniFilename = iniPath.c_str();
 
-    float scale = ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd) * ReadUiScaleSetting();
+    float scale = ComputeUiScale(hwnd, ReadUiScaleSetting());
     LoadFonts(scale);
     ApplyStyle(scale);
     ImGui_ImplWin32_Init(hwnd);
@@ -487,9 +508,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
             g_resizeW = g_resizeH = 0;
             CreateRenderTarget();
         }
+        // ウィンドウの大きさ・DPI・環境設定の倍率が変わったら、UI (フォントと余白) をその大きさで作り直す
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            float want = ComputeUiScale(hwnd, editor.UiScaleSetting());
+            if (std::abs(want - scale) > 0.01f) {
+                scale = want;
+                LoadFonts(scale);
+                ApplyStyle(scale);
+                ImGui_ImplDX11_InvalidateDeviceObjects(); // 次の NewFrame でフォントのテクスチャを作り直す
+                LOG_INFO("UI の大きさを x%.2f にしました (ウィンドウの大きさに合わせて)", scale);
+            }
+        }
 
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
+        if (mouseX >= 0.0f) ImGui::GetIO().AddMousePosEvent(mouseX, mouseY);
         ImGui::NewFrame();
         ImGuizmo::BeginFrame();
         editor.Frame();

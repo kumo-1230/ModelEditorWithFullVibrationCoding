@@ -288,6 +288,31 @@ struct GltfWriter {
                 if (ch.node < 0 || ch.times.empty() || ch.values.size() < ch.times.size()) continue;
                 tinygltf::AnimationSampler s;
                 s.input = AddAccessor(ch.times, TINYGLTF_COMPONENT_TYPE_FLOAT, TINYGLTF_TYPE_SCALAR, 0, true);
+                if (ch.IsCubic()) {
+                    // 曲線: glTF の CUBICSPLINE (キーごとに 入る側の接線 / 値 / 出る側の接線 の 3 つを並べる)
+                    const size_t n = ch.times.size();
+                    if (ch.path == AnimPath::Rotation) {
+                        std::vector<glm::vec4> out;
+                        for (size_t k = 0; k < n; ++k) { out.push_back(ch.inTangents[k]); out.push_back(ch.values[k]); out.push_back(ch.outTangents[k]); }
+                        s.output = AddAccessor(out, TINYGLTF_COMPONENT_TYPE_FLOAT, TINYGLTF_TYPE_VEC4, 0);
+                    } else {
+                        std::vector<glm::vec3> out;
+                        for (size_t k = 0; k < n; ++k) {
+                            out.push_back(glm::vec3(ch.inTangents[k]));
+                            out.push_back(glm::vec3(ch.values[k]));
+                            out.push_back(glm::vec3(ch.outTangents[k]));
+                        }
+                        s.output = AddAccessor(out, TINYGLTF_COMPONENT_TYPE_FLOAT, TINYGLTF_TYPE_VEC3, 0);
+                    }
+                    s.interpolation = "CUBICSPLINE";
+                    g.samplers.push_back(s);
+                    tinygltf::AnimationChannel c;
+                    c.sampler = (int)g.samplers.size() - 1;
+                    c.target_node = ch.node;
+                    c.target_path = ch.path == AnimPath::Translation ? "translation" : ch.path == AnimPath::Rotation ? "rotation" : "scale";
+                    g.channels.push_back(c);
+                    continue;
+                }
                 if (ch.path == AnimPath::Rotation) {
                     std::vector<glm::vec4> q(ch.values.begin(), ch.values.begin() + ch.times.size());
                     for (auto& v : q) { float l = glm::length(v); v = l > 0 ? v / l : glm::vec4(0, 0, 0, 1); }

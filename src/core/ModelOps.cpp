@@ -156,6 +156,34 @@ std::string NormalizeBoneName(const std::string& name) {
     return out.empty() ? s : out;
 }
 
+std::vector<std::pair<int, int>> AutoBoneMap(const Scene& scene, int srcModel, int dstModel) {
+    std::vector<std::pair<int, int>> out;
+    if (srcModel < 0 || dstModel < 0 || srcModel >= (int)scene.nodes.size() || dstModel >= (int)scene.nodes.size()) return out;
+    auto srcMask = SubtreeMask(scene, srcModel), dstMask = SubtreeMask(scene, dstModel);
+    std::unordered_map<std::string, int> dstExact, dstNorm;
+    for (int i = 0; i < (int)scene.nodes.size(); ++i) {
+        if (!dstMask[i] || i == dstModel) continue;
+        dstExact.emplace(scene.nodes[i].name, i);
+        dstNorm.emplace(NormalizeBoneName(scene.nodes[i].name), i);
+    }
+    // 元のボーン: 動くノードとスキンのジョイント
+    std::vector<char> isBone(scene.nodes.size(), 0);
+    for (auto& a : scene.animations) for (auto& c : a.channels) if (c.node >= 0 && c.node < (int)isBone.size()) isBone[c.node] = 1;
+    for (auto& s : scene.skins) for (int j : s.joints) if (j >= 0 && j < (int)isBone.size()) isBone[j] = 1;
+    for (int i = 0; i < (int)scene.nodes.size(); ++i) {
+        if (!srcMask[i] || i == srcModel || !isBone[i]) continue;
+        int d = -1;
+        auto it = dstExact.find(scene.nodes[i].name);
+        if (it != dstExact.end()) d = it->second;
+        else {
+            auto jt = dstNorm.find(NormalizeBoneName(scene.nodes[i].name));
+            if (jt != dstNorm.end()) d = jt->second;
+        }
+        out.push_back({ i, d });
+    }
+    return out;
+}
+
 static glm::quat WorldRot(const glm::mat4& m) {
     glm::mat3 r(m);
     for (int i = 0; i < 3; ++i) {
@@ -181,7 +209,16 @@ std::vector<int> CopyAnimationsBetweenModels(Scene& scene, int srcModel, int dst
         dstExact.emplace(scene.nodes[i].name, i);
         dstNorm.emplace(NormalizeBoneName(scene.nodes[i].name), i);
     }
+    std::unordered_map<std::string, std::string> manual(opt.boneMap.begin(), opt.boneMap.end());
+    // 先のノード番号。-1 = 見つからない、-2 = 手で「使わない」にした
     auto mapNode = [&](int s) -> int {
+        auto m = manual.find(scene.nodes[s].name);
+        if (m != manual.end()) {
+            if (m->second.empty()) return -2;
+            auto it = dstExact.find(m->second);
+            return it != dstExact.end() ? it->second : -1;
+        }
+        if (!opt.autoMatch) return -1;
         auto it = dstExact.find(scene.nodes[s].name);
         if (it != dstExact.end()) return it->second;
         auto jt = dstNorm.find(NormalizeBoneName(scene.nodes[s].name));
@@ -226,6 +263,7 @@ std::vector<int> CopyAnimationsBetweenModels(Scene& scene, int srcModel, int dst
         for (const auto& ch : src.channels) {
             if (ch.node < 0 || ch.node >= (int)srcMask.size() || !srcMask[ch.node] || ch.node == srcModel) continue;
             int d = mapNode(ch.node);
+            if (d == -2) continue; // 手で「使わない」にしたボーン
             if (d < 0) { unmatched.insert(scene.nodes[ch.node].name); continue; }
             matched.insert(d);
             AnimChannel c = ch;
@@ -241,6 +279,7 @@ std::vector<int> CopyAnimationsBetweenModels(Scene& scene, int srcModel, int dst
                     else t *= rep.heightRatio;
                     v = glm::vec4(t, 0.0f);
                 }
+                for (auto* tans : { &c.inTangents, &c.outTangents }) for (auto& d2 : *tans) d2 *= rep.heightRatio; // 曲線の傾きも同じ倍率
             } else if (ch.path == AnimPath::Rotation) {
                 if (opt.mode == 1) {
                     // ワールドでの「レストポーズからの回転」が同じになるように移す:
@@ -253,6 +292,13 @@ std::vector<int> CopyAnimationsBetweenModels(Scene& scene, int srcModel, int dst
                         glm::quat r = glm::normalize(glm::inverse(Pd) * Ps * q * glm::inverse(Ws) * Wd);
                         v = glm::vec4(r.x, r.y, r.z, r.w);
                     }
+                    // 曲線の接線にも同じ左右の掛け算をする (q → A q B は線形)
+                    for (auto* tans : { &c.inTangents, &c.outTangents })
+                        for (auto& d2 : *tans) {
+                            glm::quat q(d2.w, d2.x, d2.y, d2.z);
+                            glm::quat r = glm::inverse(Pd) * Ps * q * glm::inverse(Ws) * Wd;
+                            d2 = glm::vec4(r.x, r.y, r.z, r.w);
+                        }
                 }
             } else if (!opt.scaleKeys) {
                 continue;
@@ -302,37 +348,167 @@ int MergeModels(Scene& scene, int srcModel, int dstModel) {
 // ---------------------------------------------------------------------------
 // アニメーション編集
 // ---------------------------------------------------------------------------
-glm::vec4 SampleChannel(const AnimChannel& ch, float t) {
-    if (ch.times.empty() || ch.values.empty()) return glm::vec4(0.0f);
-    if (ch.times.size() == 1 || t <= ch.times.front()) return ch.values.front();
-    size_t last = std::min(ch.times.size(), ch.values.size()) - 1;
-    if (t >= ch.times[last]) return ch.values[last];
-    size_t k = std::upper_bound(ch.times.begin(), ch.times.begin() + last + 1, t) - ch.times.begin() - 1;
-    size_t k1 = std::min(k + 1, last);
-    float t0 = ch.times[k], t1 = ch.times[k1];
-    float f = (t1 > t0) ? (t - t0) / (t1 - t0) : 0.0f;
-    if (ch.interp == Interp::Step) f = 0.0f;
-    const glm::vec4& a = ch.values[k];
-    const glm::vec4& b = ch.values[k1];
-    if (ch.path == AnimPath::Rotation) {
-        glm::quat q = glm::slerp(glm::quat(a.w, a.x, a.y, a.z), glm::quat(b.w, b.x, b.y, b.z), f);
-        return glm::vec4(q.x, q.y, q.z, q.w);
+glm::vec4 SampleChannel(const AnimChannel& ch, float t) { return EvalChannel(ch, t); }
+
+glm::vec4 ChannelDerivative(const AnimChannel& ch, float t) {
+    const size_t n = std::min(ch.times.size(), ch.values.size());
+    if (n < 2 || ch.interp == Interp::Step) return glm::vec4(0.0f);
+    if (t <= ch.times.front()) t = ch.times.front();
+    if (t >= ch.times[n - 1]) t = ch.times[n - 1];
+    size_t k = std::upper_bound(ch.times.begin(), ch.times.begin() + n, t) - ch.times.begin();
+    k = k == 0 ? 0 : std::min(k - 1, n - 2);
+    const float t0 = ch.times[k], t1 = ch.times[k + 1], dt = t1 - t0;
+    if (dt <= 0.0f) return glm::vec4(0.0f);
+    const glm::vec4 &a = ch.values[k], &b = ch.values[k + 1];
+    if (ch.IsCubic()) {
+        float f = (t - t0) / dt, f2 = f * f;
+        return ((6 * f2 - 6 * f) * a + (3 * f2 - 4 * f + 1) * dt * ch.outTangents[k] + (-6 * f2 + 6 * f) * b + (3 * f2 - 2 * f) * dt * ch.inTangents[k + 1]) / dt;
     }
-    return glm::mix(a, b, f);
+    return (b - a) / dt;
 }
 
+int InsertKey(AnimChannel& ch, float t) {
+    const float eps = 1e-5f;
+    for (size_t k = 0; k < ch.times.size(); ++k)
+        if (std::abs(ch.times[k] - t) <= eps) return (int)k;
+    glm::vec4 v = EvalChannel(ch, t);
+    const bool cubic = ch.IsCubic();
+    glm::vec4 d = cubic ? ChannelDerivative(ch, t) : glm::vec4(0.0f);
+    // 最初のキーより前・最後のキーより後は値が変わらない (平らに延びる) ので、そこに打つキーは傾き 0。
+    // 端のキーの外側の傾きも 0 にして、間が平らなままになるようにする
+    const bool before = !ch.times.empty() && t < ch.times.front(), after = !ch.times.empty() && t > ch.times.back();
+    if (cubic && (before || after)) {
+        d = glm::vec4(0.0f);
+        if (after) ch.outTangents.back() = glm::vec4(0.0f);
+        if (before) ch.inTangents.front() = glm::vec4(0.0f);
+    }
+    if (ch.path == AnimPath::Rotation && !ch.values.empty()) {
+        // 前のキーと同じ向きの四元数にそろえる (符号が逆だと補間が遠回りになる)
+        size_t prev = std::upper_bound(ch.times.begin(), ch.times.end(), t) - ch.times.begin();
+        const glm::vec4& ref = ch.values[prev > 0 ? prev - 1 : 0];
+        if (glm::dot(ref, v) < 0.0f) { v = -v; d = -d; }
+    }
+    size_t idx = std::upper_bound(ch.times.begin(), ch.times.end(), t) - ch.times.begin();
+    ch.times.insert(ch.times.begin() + idx, t);
+    ch.values.insert(ch.values.begin() + idx, v);
+    if (cubic) {
+        ch.inTangents.insert(ch.inTangents.begin() + idx, d);
+        ch.outTangents.insert(ch.outTangents.begin() + idx, d);
+    }
+    return (int)idx;
+}
+
+void EraseKey(AnimChannel& ch, int k) {
+    if (k < 0 || k >= (int)ch.times.size()) return;
+    ch.times.erase(ch.times.begin() + k);
+    if (k < (int)ch.values.size()) ch.values.erase(ch.values.begin() + k);
+    if (k < (int)ch.inTangents.size()) ch.inTangents.erase(ch.inTangents.begin() + k);
+    if (k < (int)ch.outTangents.size()) ch.outTangents.erase(ch.outTangents.begin() + k);
+}
+
+void LinearizeChannel(AnimChannel& ch, float fps) {
+    if (ch.interp != Interp::CubicSpline) return;
+    if (ch.IsCubic() && ch.times.size() >= 2) {
+        std::vector<float> times;
+        std::vector<glm::vec4> values;
+        for (size_t k = 0; k < ch.times.size(); ++k) {
+            times.push_back(ch.times[k]);
+            values.push_back(ch.values[k]);
+            if (k + 1 >= ch.times.size()) break;
+            const float t0 = ch.times[k], t1 = ch.times[k + 1];
+            const int n = std::max(1, (int)std::ceil((t1 - t0) * fps - 1e-4f));
+            for (int i = 1; i < n; ++i) {
+                float t = t0 + (t1 - t0) * i / n;
+                times.push_back(t);
+                values.push_back(EvalChannel(ch, t));
+            }
+        }
+        ch.times = std::move(times);
+        ch.values = std::move(values);
+    }
+    ch.interp = Interp::Linear;
+    ch.inTangents.clear();
+    ch.outTangents.clear();
+}
+
+void LinearizeAnimation(Animation& anim, float fps) {
+    for (auto& ch : anim.channels) LinearizeChannel(ch, fps);
+}
+
+void MakeCubic(AnimChannel& ch) {
+    if (ch.IsCubic()) return;
+    const size_t n = std::min(ch.times.size(), ch.values.size());
+    ch.inTangents.assign(n, glm::vec4(0.0f));
+    ch.outTangents.assign(n, glm::vec4(0.0f));
+    if (ch.interp != Interp::Step) {
+        // 前後の区間の傾きを接線にすると、形は今の直線のまま変わらない
+        for (size_t k = 0; k + 1 < n; ++k) {
+            float dt = ch.times[k + 1] - ch.times[k];
+            glm::vec4 s = dt > 0 ? (ch.values[k + 1] - ch.values[k]) / dt : glm::vec4(0.0f);
+            ch.outTangents[k] = s;
+            ch.inTangents[k + 1] = s;
+        }
+    }
+    ch.interp = Interp::CubicSpline;
+}
+
+void SetKeyTangents(AnimChannel& ch, const std::vector<int>& keys, TangentMode mode) {
+    if (mode == TangentMode::Step) {
+        // ステップはチャンネル全体の補間方法 (glTF の仕様)
+        ch.interp = Interp::Step;
+        ch.inTangents.clear();
+        ch.outTangents.clear();
+        return;
+    }
+    if (ch.interp == Interp::Step) ch.interp = Interp::Linear;
+    MakeCubic(ch);
+    const int n = (int)ch.times.size();
+    auto slope = [&](int a, int b) {
+        float dt = ch.times[b] - ch.times[a];
+        return dt > 0 ? (ch.values[b] - ch.values[a]) / dt : glm::vec4(0.0f);
+    };
+    for (int k : keys) {
+        if (k < 0 || k >= n) continue;
+        glm::vec4 in(0.0f), out(0.0f);
+        switch (mode) {
+        case TangentMode::Linear:
+            in = k > 0 ? slope(k - 1, k) : (k + 1 < n ? slope(k, k + 1) : glm::vec4(0.0f));
+            out = k + 1 < n ? slope(k, k + 1) : in;
+            break;
+        case TangentMode::Flat:
+            break;
+        case TangentMode::Spline: {
+            // Catmull-Rom (Maya の「スプライン」): 前後のキーを結ぶ傾き。端は隣への傾き
+            glm::vec4 s = (k > 0 && k + 1 < n) ? slope(k - 1, k + 1) : (k + 1 < n ? slope(k, k + 1) : (k > 0 ? slope(k - 1, k) : glm::vec4(0.0f)));
+            in = out = s;
+            break;
+        }
+        case TangentMode::Clamped: {
+            // 前後のどちらかと同じ値なら平ら (行き過ぎない)、それ以外はスプライン
+            bool flatPrev = k > 0 && glm::length(ch.values[k] - ch.values[k - 1]) < 1e-6f;
+            bool flatNext = k + 1 < n && glm::length(ch.values[k + 1] - ch.values[k]) < 1e-6f;
+            glm::vec4 s = (k > 0 && k + 1 < n) ? slope(k - 1, k + 1) : (k + 1 < n ? slope(k, k + 1) : (k > 0 ? slope(k - 1, k) : glm::vec4(0.0f)));
+            in = out = (flatPrev || flatNext) ? glm::vec4(0.0f) : s;
+            break;
+        }
+        default:
+            break;
+        }
+        ch.inTangents[k] = in;
+        ch.outTangents[k] = out;
+    }
+}
+
+// t0〜t1 の外側のキーを消し、t0 を 0 秒にする (両端は形を保ったまま分割したキー)
 static void TrimChannel(AnimChannel& ch, float t0, float t1) {
     if (ch.times.empty()) return;
-    std::vector<float> times;
-    std::vector<glm::vec4> values;
-    times.push_back(0.0f);
-    values.push_back(SampleChannel(ch, t0));
+    if (ch.times.size() == 1) { ch.times[0] = 0.0f; return; }
     const float eps = 1e-5f;
-    for (size_t k = 0; k < ch.times.size() && k < ch.values.size(); ++k)
-        if (ch.times[k] > t0 + eps && ch.times[k] < t1 - eps) { times.push_back(ch.times[k] - t0); values.push_back(ch.values[k]); }
-    if (t1 - t0 > eps && ch.times.size() > 1) { times.push_back(t1 - t0); values.push_back(SampleChannel(ch, t1)); }
-    ch.times = std::move(times);
-    ch.values = std::move(values);
+    InsertKey(ch, t0);
+    if (t1 - t0 > eps) InsertKey(ch, t1);
+    for (int k = (int)ch.times.size() - 1; k >= 0; --k)
+        if (ch.times[k] < t0 - eps || ch.times[k] > t1 + eps) EraseKey(ch, k);
+    for (auto& t : ch.times) t = std::max(0.0f, t - t0);
 }
 
 void TrimAnimation(Animation& anim, float t0, float t1) {
@@ -347,27 +523,16 @@ void CutAnimationRange(Animation& anim, float t0, float t1) {
     t1 = std::min(std::max(t0, t1), anim.duration);
     const float d = t1 - t0, eps = 1e-5f;
     if (d <= eps) return;
+    // 切った位置: t0 までは元のまま、ほんの少し後 (gap) から t1 以降の動きがそのまま続く
+    const float gap = 1e-4f;
     for (auto& ch : anim.channels) {
-        if (ch.times.empty()) continue;
-        std::vector<float> times;
-        std::vector<glm::vec4> values;
-        for (size_t k = 0; k < ch.times.size() && k < ch.values.size(); ++k)
-            if (ch.times[k] < t0 - eps) { times.push_back(ch.times[k]); values.push_back(ch.values[k]); }
-        // 切った位置: t0 までは元のまま、ほんの少し後 (gap) から t1 以降の動きがそのまま続く
-        const float gap = 1e-4f;
-        times.push_back(t0);
-        values.push_back(SampleChannel(ch, t0));
-        times.push_back(t0 + gap);
-        values.push_back(SampleChannel(ch, t1 + gap));
-        for (size_t k = 0; k < ch.times.size() && k < ch.values.size(); ++k)
-            if (ch.times[k] > t1 + gap + eps) { times.push_back(ch.times[k] - d); values.push_back(ch.values[k]); }
-        // 時刻が重なったキーを除く
-        for (size_t k = 1; k < times.size();) {
-            if (times[k] <= times[k - 1]) { times.erase(times.begin() + k); values.erase(values.begin() + k); }
-            else ++k;
-        }
-        ch.times = std::move(times);
-        ch.values = std::move(values);
+        if (ch.times.size() < 2) continue;
+        InsertKey(ch, t0);
+        InsertKey(ch, t1 + gap);
+        for (int k = (int)ch.times.size() - 1; k >= 0; --k)
+            if (ch.times[k] > t0 + eps && ch.times[k] < t1 + gap - eps) EraseKey(ch, k);
+        for (auto& t : ch.times)
+            if (t > t0 + eps) t -= d;
     }
     anim.duration = std::max(0.0f, anim.duration - d);
 }
@@ -395,28 +560,11 @@ int DeleteKeysInRange(Animation& anim, const std::vector<int>& nodes, float t0, 
     for (auto& ch : anim.channels) {
         if (!ns.empty() && !ns.count(ch.node)) continue;
         if (ch.times.size() < 2) continue;
-        glm::vec4 v0 = SampleChannel(ch, t0), v1 = SampleChannel(ch, t1);
-        std::vector<float> times;
-        std::vector<glm::vec4> values;
-        for (size_t k = 0; k < ch.times.size() && k < ch.values.size(); ++k) {
-            float t = ch.times[k];
-            if (t > t0 + eps && t < t1 - eps) { ++removed; continue; }
-            times.push_back(t);
-            values.push_back(ch.values[k]);
-        }
-        // 範囲の両端には元の値を残す (範囲内は両端をつなぐ補間になる)
-        auto insertKey = [&](float t, const glm::vec4& v) {
-            if (t <= ch.times.front() + eps || t >= ch.times.back() - eps) return;
-            auto it = std::lower_bound(times.begin(), times.end(), t - eps);
-            if (it != times.end() && std::abs(*it - t) <= eps) return;
-            size_t idx = it - times.begin();
-            times.insert(times.begin() + idx, t);
-            values.insert(values.begin() + idx, v);
-        };
-        insertKey(t0, v0);
-        insertKey(t1, v1);
-        ch.times = std::move(times);
-        ch.values = std::move(values);
+        // 範囲の両端には元の値 (と曲線なら傾き) のキーを残し、範囲内は両端をつなぐ補間にする
+        if (t0 > ch.times.front() + eps && t0 < ch.times.back() - eps) InsertKey(ch, t0);
+        if (t1 > ch.times.front() + eps && t1 < ch.times.back() - eps) InsertKey(ch, t1);
+        for (int k = (int)ch.times.size() - 1; k >= 0; --k)
+            if (ch.times[k] > t0 + eps && ch.times[k] < t1 - eps) { EraseKey(ch, k); ++removed; }
     }
     return removed;
 }
@@ -424,7 +572,7 @@ int DeleteKeysInRange(Animation& anim, const std::vector<int>& nodes, float t0, 
 int ReduceKeys(Animation& anim, float tolerance) {
     int removed = 0;
     for (auto& ch : anim.channels) {
-        if (ch.times.size() < 3 || ch.interp == Interp::Step) continue;
+        if (ch.times.size() < 3 || ch.interp != Interp::Linear) continue; // 曲線とステップは間引かない
         const size_t n = std::min(ch.times.size(), ch.values.size());
         std::vector<float> times{ ch.times.front() };
         std::vector<glm::vec4> values{ ch.values.front() };

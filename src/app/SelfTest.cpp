@@ -448,6 +448,147 @@ bool RunSelfTest(const std::string& path, int& exitCode) {
                        Ops::NormalizeBoneName("Bip01_Spine") == Ops::NormalizeBoneName("spine");
             report("ボーン名の正規化 (mixamorig: / Armature| / Bip01_)", okN, 0.0f);
         }
+        // ---- 曲線 (カーブエディタ): 接線・キーの追加・切り抜き・速度・書き出し ----
+        {
+            // 形を変えずに曲線にする (リニアの接線)
+            Animation a = src;
+            for (auto& ch : a.channels) Ops::MakeCubic(ch);
+            float e = 0;
+            for (int k = 0; k <= 40; ++k) e = std::max(e, poseErr(a, D * k / 40, D * k / 40));
+            // 回転は曲線では 4 成分の補間 + 正規化 (球面補間ではない) になるので、大きく回る区間でわずかに速さが違ってよい
+            report("曲線にしても形が変わらない (リニアの接線)", e < size * 5e-3f, e);
+        }
+        {
+            Animation a = src;
+            for (auto& ch : a.channels) {
+                std::vector<int> all;
+                for (int k = 0; k < (int)ch.times.size(); ++k) all.push_back(k);
+                Ops::SetKeyTangents(ch, all, Ops::TangentMode::Spline);
+            }
+            // スプラインでもキーの時刻ではキーの値を通る
+            float e = 0;
+            for (auto& ch : a.channels)
+                for (size_t k = 0; k < ch.times.size(); ++k) {
+                    glm::vec4 v = EvalChannel(ch, ch.times[k]), w = ch.values[k];
+                    e = std::max(e, ch.path == AnimPath::Rotation ? std::min(glm::length(v - w), glm::length(v + w)) : glm::length(v - w));
+                }
+            report("スプラインの接線: キーの値を通る", e < 1e-4f, e);
+            // キーの追加 (形を変えない)・切り抜き・カット・速度
+            Animation b = a;
+            float e2 = 0;
+            for (auto& ch : b.channels) Ops::InsertKey(ch, D * 0.37f);
+            for (int k = 0; k <= 40; ++k) e2 = std::max(e2, MaxError(WorldPositions(base, [&] { auto p = base.RestPose(); SampleAnimation(base, b, D * k / 40, p); return p; }()),
+                                                                   WorldPositions(base, [&] { auto p = base.RestPose(); SampleAnimation(base, a, D * k / 40, p); return p; }())));
+            report("曲線にキーを打っても形が変わらない", e2 < size * 1e-4f, e2);
+            Animation c = a;
+            Ops::TrimAnimation(c, D * 0.2f, D * 0.8f);
+            float e3 = 0;
+            for (int k = 0; k <= 30; ++k) {
+                float t = D * 0.6f * k / 30;
+                auto pc = base.RestPose(), pa = base.RestPose();
+                SampleAnimation(base, c, t, pc);
+                SampleAnimation(base, a, t + D * 0.2f, pa);
+                e3 = std::max(e3, MaxError(WorldPositions(base, pc), WorldPositions(base, pa)));
+            }
+            // 移動・スケールは形がそのまま (誤差 1e-7 程度)。回転は 1 点ずつ正規化する曲線なので、分割した位置で
+            // わずかに (0.5 度未満) 変わる
+            report("曲線の切り抜き (形を保つ)", e3 < size * 5e-3f, e3);
+            Animation f = a;
+            Ops::ScaleAnimationSpeed(f, 2.0f);
+            float e4 = 0;
+            for (int k = 0; k <= 30; ++k) {
+                float t = D * k / 30;
+                auto pf = base.RestPose(), pa = base.RestPose();
+                SampleAnimation(base, f, t * 0.5f, pf);
+                SampleAnimation(base, a, t, pa);
+                e4 = std::max(e4, MaxError(WorldPositions(base, pf), WorldPositions(base, pa)));
+            }
+            report("曲線の速度 x2 (接線も 2 倍)", e4 < size * 1e-4f, e4);
+            // 書き出し: glTF は CUBICSPLINE のまま、FBX は 30 fps の直線キー
+            Scene cs = base;
+            cs.animations[0] = a;
+            std::string outG = FileUtil::FromPath(tmpDir / "curve.gltf"), outF = FileUtil::FromPath(tmpDir / "curve.fbx");
+            ExportOptions eo;
+            eo.verifyAfterExport = false;
+            bool okG = ExportScene(cs, outG, eo, err);
+            std::vector<uint8_t> js;
+            FileUtil::ReadBinary(outG, js);
+            bool hasCubic = std::string(js.begin(), js.end()).find("CUBICSPLINE") != std::string::npos;
+            std::string report2;
+            bool valid = okG && VerifyGltf(outG, report2);
+            report("glTF に曲線 (CUBICSPLINE) のまま書き出す", okG && hasCubic && valid, 0.0f);
+            Scene re;
+            ImportOptions io2;
+            io2.convertUnitsToMeters = true;
+            bool okF = ExportScene(cs, outF, eo, err) && ImportModel(outF, io2, re, err) && !re.animations.empty();
+            // FBX は読み込み時にレストポーズがバインドポーズに置き換わることがあるので、他の FBX のテストと同じく
+            // アニメーション中の大きさ (AABB) で比べる
+            float e5 = 0;
+            if (okF)
+                for (int k = 0; k <= 10; ++k) {
+                    float t = D * k / 10;
+                    glm::vec3 a0, a1, b0, b1;
+                    cs.ComputeBounds(cs.ComputeWorldMatrices(PoseAt(cs, t)), a0, a1);
+                    re.ComputeBounds(re.ComputeWorldMatrices(PoseAt(re, t)), b0, b1);
+                    e5 = std::max(e5, std::max(glm::length(a0 - b0), glm::length(a1 - b1)));
+                }
+            // 同じ比べ方で、曲線にしていない元のアニメーションを FBX にしたときの差 (FBX 自体の差)
+            float eRef = 0;
+            {
+                Scene re2;
+                std::string outF2 = FileUtil::FromPath(tmpDir / "curve_ref.fbx");
+                if (ExportScene(base, outF2, eo, err) && ImportModel(outF2, io2, re2, err) && !re2.animations.empty())
+                    for (int k = 0; k <= 10; ++k) {
+                        float t = D * k / 10;
+                        glm::vec3 a0, a1, b0, b1;
+                        base.ComputeBounds(base.ComputeWorldMatrices(PoseAt(base, t)), a0, a1);
+                        re2.ComputeBounds(re2.ComputeWorldMatrices(PoseAt(re2, t)), b0, b1);
+                        eRef = std::max(eRef, std::max(glm::length(a0 - b0), glm::length(a1 - b1)));
+                    }
+            }
+            printf("[INFO] FBX の差: 曲線 %.3g / 元のアニメーション %.3g (大きさ %.3g)\n", e5, eRef, size);
+            report("FBX は曲線を 30 fps のキーにして書き出す", okF && e5 < std::max(size * 1e-2f, eRef * 1.5f), e5);
+        }
+        // ---- ボーンの対応付け (手で決める / 使わないボーン) ----
+        {
+            Scene meshOnly = base, animOnly = base;
+            Ops::StripAnimations(meshOnly);
+            Ops::StripToAnimationOnly(animOnly);
+            for (auto& n : animOnly.nodes) n.name = "src_" + n.name + "_x"; // 名前では対応しないようにする
+            Scene t;
+            Ops::AppendScene(t, meshOnly);
+            int mMesh = Ops::GroupRootsAsModel(t, "Mesh", 0);
+            size_t r1 = t.roots.size();
+            Ops::AppendScene(t, animOnly);
+            int mAnim = Ops::GroupRootsAsModel(t, "Motion", r1);
+            Ops::RetargetOptions opt;
+            opt.otherTranslations = true;
+            opt.scaleKeys = true;
+            opt.autoMatch = false;
+            auto autoMap = Ops::AutoBoneMap(t, mAnim, mMesh);
+            int autoHits = 0;
+            for (auto& [s, d] : autoMap) if (d >= 0) ++autoHits;
+            for (auto& n : base.nodes) opt.boneMap.push_back({ "src_" + n.name + "_x", n.name });
+            Ops::RetargetReport rep;
+            auto added = Ops::CopyAnimationsBetweenModels(t, mAnim, mMesh, {}, opt, &rep);
+            int frames = 0;
+            Scene got = Ops::ExtractModel(t, mMesh);
+            Ops::BakeObjectScales(got, true);
+            float e = Ops::MaxMotionError(base, got, 30.0f, &frames);
+            report("手で決めたボーンの対応で動きを移す", autoHits == 0 && !added.empty() && e >= 0 && e < tol, e);
+            // 1 本を「使わない」にすると、そのボーンには入らない
+            Ops::RetargetOptions opt2 = opt;
+            std::string skipped = opt2.boneMap.front().first;
+            opt2.boneMap.front().second.clear();
+            Scene t2 = t;
+            int before = (int)t2.animations.size();
+            Ops::CopyAnimationsBetweenModels(t2, mAnim, mMesh, {}, opt2, &rep);
+            bool none = true;
+            int skipNode = t2.FindNode(base.nodes[0].name);
+            for (int a2 = before; a2 < (int)t2.animations.size(); ++a2)
+                for (auto& c2 : t2.animations[a2].channels) if (c2.node == skipNode && skipNode >= 0) none = false;
+            report("「使わない」にしたボーンには動きを入れない", none && rep.unmatched.empty(), 0.0f);
+        }
     }
     // テクスチャフォルダの名前 (モデル名の命名規則に合わせる / 合わないものはキャメルケース)
     for (auto [in, expect] : { std::pair{ "my_model", "my_model_texture" }, std::pair{ "MY_MODEL", "MY_MODEL_TEXTURE" }, std::pair{ "SK_Hero", "SK_Hero_Texture" },

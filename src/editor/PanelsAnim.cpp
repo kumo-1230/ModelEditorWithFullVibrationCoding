@@ -74,7 +74,7 @@ void Editor::DrawSkeleton() {
     ImGui::Checkbox("最前面", &m_rs.bonesOnTop);
     ImGui::SameLine();
     ImGui::Checkbox("名前", &m_showBoneNames);
-    ImGui::SetNextItemWidth(120);
+    ImGui::SetNextItemWidth(Px(120));
     ImGui::SliderFloat("サイズ", &m_rs.boneSize, 0.1f, 5.0f);
     ImGui::SameLine();
     bool weightMode = m_rs.mode == RM_Weights;
@@ -170,7 +170,7 @@ void Editor::DrawAnimation() {
         return;
     }
     // 左: クリップ一覧, 右: 再生コントロール
-    ImGui::BeginChild("clips", ImVec2(220, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX);
+    ImGui::BeginChild("clips", ImVec2(Px(220), 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX);
     if (ImGui::Selectable("(レストポーズ)", m_anim < 0)) { m_anim = -1; m_playing = false; }
     const auto animMask = Membership().animations;
     for (int i = 0; i < (int)m_scene.animations.size(); ++i) {
@@ -200,7 +200,7 @@ void Editor::DrawAnimation() {
     ImGui::BeginChild("controls");
     if (m_anim >= 0 && m_anim < (int)m_scene.animations.size()) {
         Animation& a = m_scene.animations[m_anim];
-        ImGui::SetNextItemWidth(240);
+        ImGui::SetNextItemWidth(Px(240));
         EditValue("アニメーション名", a.name, [&] { return ImGui::InputText("名前##anim", &a.name); });
         ImGui::SameLine();
         ImGui::TextDisabled("チャンネル %zu / 長さ %.3f 秒", a.channels.size(), a.duration);
@@ -219,7 +219,7 @@ void Editor::DrawAnimation() {
         ImGui::SameLine();
         ImGui::Checkbox("ループ", &m_loop);
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(120);
+        ImGui::SetNextItemWidth(Px(120));
         ImGui::SliderFloat("プレビュー速度", &m_animSpeed, -2.0f, 4.0f, "%.2fx");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("再生の確認用です (データは変わらず、書き出しにも影響しません)。\n書き出す速度を変えるには下の「アニメーション速度」を使います");
         ImGui::SetNextItemWidth(-1);
@@ -240,7 +240,7 @@ void Editor::DrawAnimation() {
             LOG_INFO("%s のアニメーション速度を x%.4g にしました (長さ %.3f 秒)", allAnims ? "全" : ("'" + a.name + "'").c_str(), s, a.duration);
             MarkChanged();
         };
-        ImGui::SetNextItemWidth(100);
+        ImGui::SetNextItemWidth(Px(100));
         ImGui::InputFloat("倍速##speed", &speed, 0, 0, "%.4g");
         speed = std::max(speed, 1e-3f);
         ImGui::SameLine();
@@ -253,7 +253,7 @@ void Editor::DrawAnimation() {
             if (q != 0.25f) ImGui::SameLine();
             if (ImGui::SmallButton(lbl)) applySpeed(q, "アニメーション速度");
         }
-        ImGui::SetNextItemWidth(100);
+        ImGui::SetNextItemWidth(Px(100));
         ImGui::InputFloat("秒##len", &targetLen, 0, 0, "%.4g");
         targetLen = std::max(targetLen, 1e-3f);
         ImGui::SameLine();
@@ -282,6 +282,7 @@ void Editor::DrawAnimation() {
                     if (!isRootJoint) continue;
                     glm::vec4 first = c.values.empty() ? glm::vec4(0) : c.values.front();
                     for (auto& v : c.values) { v.x = first.x; v.z = first.z; }
+                    for (auto* tans : { &c.inTangents, &c.outTangents }) for (auto& d : *tans) { d.x = 0; d.z = 0; } // 曲線の水平方向の傾きも 0
                     ++removed;
                 }
                 LOG_INFO("%d チャンネルの水平移動を固定しました", removed);
@@ -292,7 +293,7 @@ void Editor::DrawAnimation() {
                 size_t before = 0, after = 0;
                 for (auto& c : a.channels) {
                     before += c.times.size();
-                    if (c.times.size() < 3) { after += c.times.size(); continue; }
+                    if (c.times.size() < 3 || c.interp == Interp::CubicSpline) { after += c.times.size(); continue; } // 曲線は接線があるのでそのまま
                     std::vector<float> t2{ c.times[0] };
                     std::vector<glm::vec4> v2{ c.values[0] };
                     for (size_t k = 1; k + 1 < c.times.size(); ++k) {
@@ -316,9 +317,9 @@ void Editor::DrawAnimation() {
             if (ImGui::BeginTable("chs", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable, ImVec2(0, 200))) {
                 ImGui::TableSetupScrollFreeze(0, 1);
                 ImGui::TableSetupColumn("ノード");
-                ImGui::TableSetupColumn("種類", ImGuiTableColumnFlags_WidthFixed, 70);
-                ImGui::TableSetupColumn("キー", ImGuiTableColumnFlags_WidthFixed, 50);
-                ImGui::TableSetupColumn("範囲", ImGuiTableColumnFlags_WidthFixed, 110);
+                ImGui::TableSetupColumn("種類", ImGuiTableColumnFlags_WidthFixed, Px(70));
+                ImGui::TableSetupColumn("キー", ImGuiTableColumnFlags_WidthFixed, Px(50));
+                ImGui::TableSetupColumn("範囲", ImGuiTableColumnFlags_WidthFixed, Px(110));
                 ImGui::TableHeadersRow();
                 static const char* paths[] = { "移動", "回転", "スケール" };
                 ImGuiListClipper clip;

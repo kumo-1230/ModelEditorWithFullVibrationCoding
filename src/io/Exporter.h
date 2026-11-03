@@ -26,6 +26,7 @@ struct ExportOptions {
     ExportFormat format = ExportFormat::GLB;
     int content = 0;               // 書き出す内容: 0=全部 1=モデルだけ (アニメーションなし) 2=アニメーションだけ (骨格 + アニメーション)
     bool exportAnimations = true;
+    float curveBakeFps = 60.0f;    // 曲線を持てない形式 (FBX など) で、曲線を直線キーにするときの刻み (fps)
     bool exportSkins = true;
     bool exportMorphTargets = true;
     bool exportNormals = true;

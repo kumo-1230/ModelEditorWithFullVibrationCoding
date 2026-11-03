@@ -101,7 +101,7 @@ void Editor::DrawGizmo(const ImVec2& pos, const ImVec2& size) {
     {
         glm::mat4 v = view;
         float cubeSize = 96.0f;
-        ImGuizmo::ViewManipulate(glm::value_ptr(v), m_camera.distance, ImVec2(pos.x + size.x - cubeSize - 8, pos.y + ImGui::GetFrameHeight() + 16), ImVec2(cubeSize, cubeSize), 0x10101010);
+        ImGuizmo::ViewManipulate(glm::value_ptr(v), m_camera.distance, ImVec2(pos.x + size.x - cubeSize - 8, pos.y + std::max(m_vpToolbarH, ImGui::GetFrameHeight()) + 12), ImVec2(cubeSize, cubeSize), 0x10101010);
         if (v != view) {
             glm::mat4 inv = glm::inverse(v);
             glm::vec3 camPos(inv[3]);
@@ -303,22 +303,22 @@ void Editor::DrawToolbar() {
         ImGui::EndCombo();
     }
     tip("表示モード\nライティング (完成イメージ) のほか、法線・UV・ウェイト・裏面などを色で確認できます");
-    ImGui::SameLine();
+    SameLineIfFits(IconText(ICON_WIRE, "ワイヤーのみ").c_str()); // 入らなければ次の行へ (狭いビューポートで枠外に出さない)
     const char* wireLabel = m_rs.wireframe ? "ワイヤーのみ" : "ワイヤー";
     if (toggle(ICON_WIRE, wireLabel, m_rs.wireframe || m_rs.wireOnShaded, "ワイヤーフレーム (4)\n押すたびに  なし → 面 + 線 → 線のみ  と切り替わります")) {
         if (!m_rs.wireframe && !m_rs.wireOnShaded) m_rs.wireOnShaded = true;
         else if (m_rs.wireOnShaded) { m_rs.wireOnShaded = false; m_rs.wireframe = true; }
         else m_rs.wireframe = false;
     }
-    ImGui::SameLine();
+    SameLineIfFits(IconText(ICON_TEXTURE, "テクスチャ").c_str());
     if (toggle(ICON_TEXTURE, "テクスチャ", m_rs.useTextures, "テクスチャ (6)\nオフにすると画像を貼らずに形だけを確認できます")) m_rs.useTextures = !m_rs.useTextures;
-    ImGui::SameLine();
+    SameLineIfFits(IconText(ICON_SKELETON, "ボーン").c_str());
     if (toggle(ICON_SKELETON, "ボーン", m_rs.showBones, "ボーン (骨格) を表示")) m_rs.showBones = !m_rs.showBones;
-    ImGui::SameLine();
+    SameLineIfFits(IconText(ICON_NORMALS, "法線").c_str());
     if (toggle(ICON_NORMALS, "法線", m_rs.showNormals, "法線 (面の向き) を線で表示\n長さや対象は「表示」で変えられます")) m_rs.showNormals = !m_rs.showNormals;
-    ImGui::SameLine();
+    SameLineIfFits(IconText(ICON_GRID, "グリッド").c_str());
     if (toggle(ICON_GRID, "グリッド", m_rs.showGrid, "床のグリッド\n1 マスの大きさは「表示」で変えられます")) m_rs.showGrid = !m_rs.showGrid;
-    ImGui::SameLine();
+    SameLineIfFits(IconText(ICON_EYE, "表示 ▼").c_str());
     if (ImGui::Button(IconText(ICON_EYE, "表示 ▼").c_str())) ImGui::OpenPopup("ViewOptions");
     tip("そのほかの表示設定\nライト・背景色・グリッド・スナップの刻み・視野角など");
     if (ImGui::BeginPopup("ViewOptions")) {
@@ -348,12 +348,12 @@ void Editor::DrawToolbar() {
         ImGui::Checkbox("原点軸", &m_rs.showOriginAxes);
         ImGui::SameLine();
         ImGui::Checkbox("グリッド", &m_rs.showGrid);
-        ImGui::SetNextItemWidth(110);
+        ImGui::SetNextItemWidth(Px(110));
         ImGui::DragFloat("1 マス (m)", &m_rs.gridSpacing, 0.001f, 0.001f, 100.0f, "%.3f");
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(80);
+        ImGui::SetNextItemWidth(Px(80));
         ImGui::DragInt("太線の間隔", &m_rs.gridMajorEvery, 0.2f, 1, 100);
-        ImGui::SetNextItemWidth(110);
+        ImGui::SetNextItemWidth(Px(110));
         ImGui::DragFloat("範囲 ± (m)", &m_rs.gridExtent, 0.1f, 0.01f, 10000.0f, "%.2f");
         ImGui::SameLine();
         if (ImGui::SmallButton("既定 (10cm / 1m / ±10m)")) { m_rs.gridSpacing = 0.1f; m_rs.gridMajorEvery = 10; m_rs.gridExtent = 10.0f; }
@@ -384,6 +384,7 @@ void Editor::DrawViewportOverlay(const ImVec2& pos, const ImVec2& size) {
     ImGui::BeginGroup();
     DrawToolbar();
     ImGui::EndGroup();
+    m_vpToolbarH = ImGui::GetItemRectMax().y - pos.y; // 折り返して 2 行になることもあるので、下の文字はこの下に置く
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar(2);
 
@@ -402,14 +403,14 @@ void Editor::DrawViewportOverlay(const ImVec2& pos, const ImVec2& size) {
     }
     if (m_anim >= 0 && m_anim < (int)m_scene.animations.size()) {
         snprintf(buf, sizeof(buf), "%s %s  %.2f / %.2f s", m_playing ? "再生中" : "停止", m_scene.animations[m_anim].name.c_str(), m_animTime, m_scene.animations[m_anim].duration);
-        dl->AddText(ImVec2(pos.x + 8, pos.y + ImGui::GetFrameHeight() + 16), IM_COL32(150, 230, 150, 230), buf);
+        dl->AddText(ImVec2(pos.x + 8, pos.y + std::max(m_vpToolbarH, ImGui::GetFrameHeight()) + 8), IM_COL32(150, 230, 150, 230), buf);
     }
     // 実寸サイズ
     if (m_showSizeOverlay && !m_scene.Empty()) {
         glm::vec3 d = m_sceneMax - m_sceneMin;
         std::string s = "実寸  幅 " + FormatLength(d.x, m_displayUnit) + "  ×  高さ " + FormatLength(d.y, m_displayUnit) + "  ×  奥行 " + FormatLength(d.z, m_displayUnit);
         ImVec2 ts = ImGui::CalcTextSize(s.c_str());
-        ImVec2 p0(pos.x + 10, pos.y + ImGui::GetFrameHeight() + 40);
+        ImVec2 p0(pos.x + 10, pos.y + std::max(m_vpToolbarH, ImGui::GetFrameHeight()) + 12 + ImGui::GetTextLineHeightWithSpacing());
         dl->AddRectFilled(ImVec2(p0.x - 6, p0.y - 3), ImVec2(p0.x + ts.x + 6, p0.y + ts.y + 3), IM_COL32(20, 22, 26, 190), 4.0f);
         dl->AddText(p0, IM_COL32(255, 225, 120, 255), s.c_str());
     }
@@ -417,6 +418,7 @@ void Editor::DrawViewportOverlay(const ImVec2& pos, const ImVec2& size) {
         const char* help = m_lmbOrbit ? "左ドラッグ/Alt+左/右: 回転  中/Shift+右: パン  ホイール: ズーム  F: 選択  A: 全体  H: 表示切替"
                                       : "左ドラッグ: 矩形選択  Alt+左/右: 回転  中/Shift+右: パン  ホイール: ズーム  F: 選択  A: 全体  H: 表示切替";
         ImVec2 ts = ImGui::CalcTextSize(help);
-        dl->AddText(ImVec2(pos.x + size.x - ts.x - 8, pos.y + size.y - 22), IM_COL32(200, 200, 200, 140), help);
+        // 左下の統計と重なるほど狭いときは出さない
+        if (ts.x < size.x * 0.55f) dl->AddText(ImVec2(pos.x + size.x - ts.x - 8, pos.y + size.y - ts.y - 6), IM_COL32(200, 200, 200, 140), help);
     }
 }

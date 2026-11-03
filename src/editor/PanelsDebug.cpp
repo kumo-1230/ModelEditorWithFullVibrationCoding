@@ -26,7 +26,7 @@ void Editor::DrawConsole() {
         ImGui::PopStyleColor();
         ImGui::SameLine();
     }
-    ImGui::SetNextItemWidth(160);
+    ImGui::SetNextItemWidth(Px(160));
     ImGui::InputTextWithHint("##cf", "フィルタ", &m_consoleFilter);
     ImGui::SameLine();
     ImGui::Checkbox("自動スクロール", &m_consoleAutoScroll);
@@ -108,16 +108,26 @@ void Editor::DrawValidation() {
 
     if (ImGui::BeginTable("issues", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV)) {
         ImGui::TableSetupScrollFreeze(0, 1);
-        ImGui::TableSetupColumn("重要度", ImGuiTableColumnFlags_WidthFixed, 56);
-        ImGui::TableSetupColumn("分類", ImGuiTableColumnFlags_WidthFixed, 90);
+        ImGui::TableSetupColumn("重要度", ImGuiTableColumnFlags_WidthFixed, Px(56));
+        ImGui::TableSetupColumn("分類", ImGuiTableColumnFlags_WidthFixed, Px(90));
         ImGui::TableSetupColumn("内容", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("修正", ImGuiTableColumnFlags_WidthFixed, 60);
+        ImGui::TableSetupColumn("修正", ImGuiTableColumnFlags_WidthFixed, Px(60));
         ImGui::TableHeadersRow();
         int toFix = -1, revealIssue = -1;
+        // 表示する行だけを先に集め、見えている行だけを描く (カリング)
+        std::vector<int> rows;
         for (int i = 0; i < (int)m_issues.size(); ++i) {
             const Issue& is = m_issues[i];
             if (!showInfo && is.severity == Severity::Info) continue;
             if (!IssueInActiveModel(is)) continue;
+            rows.push_back(i);
+        }
+        ImGuiListClipper clip;
+        clip.Begin((int)rows.size());
+        while (clip.Step())
+        for (int row = clip.DisplayStart; row < clip.DisplayEnd; ++row) {
+            const int i = rows[row];
+            const Issue& is = m_issues[i];
             ImGui::TableNextRow();
             ImGui::PushID(i);
             ImGui::TableNextColumn();
@@ -215,7 +225,7 @@ void Editor::DrawStats() {
     ImGui::Checkbox("選択のみ", &m_rs.debugSelectedOnly);
     ImGui::SameLine();
     ImGui::Checkbox("スキニング有効", &m_rs.skinningEnabled);
-    ImGui::SetNextItemWidth(200);
+    ImGui::SetNextItemWidth(Px(200));
     if (ImGui::BeginCombo("表示モード", RenderModeName(m_rs.mode))) {
         for (int i = 0; i < RM_Count; ++i) if (ImGui::Selectable(RenderModeName(i), m_rs.mode == i)) m_rs.mode = i;
         ImGui::EndCombo();
@@ -234,7 +244,7 @@ void Editor::DrawStats() {
 void Editor::DrawSceneInfo() {
     if (!ImGui::Begin(PanelTitle(ICON_INFO, "シーン情報", "SceneInfo").c_str(), &m_panels.sceneInfo)) { ImGui::End(); return; }
     PanelHint("読み込んだファイルの情報 (形式・単位・座標軸・数) です");
-    ImGui::TextWrapped("ファイル: %s", m_scene.info.sourcePath.empty() ? "(なし)" : m_scene.info.sourcePath.c_str());
+    EllipsisText("ファイル: ", ModelInfo(ActiveModel()).sourcePath.empty() ? std::string("(なし)") : ModelInfo(ActiveModel()).sourcePath);
     ImGui::Text("形式: %s", m_scene.info.sourceFormat.c_str());
     static const char* ax[] = { "X", "Y", "Z" };
     ImGui::Text("元の UpAxis: %s   UnitScaleFactor: %g (%s)", ax[std::clamp(m_scene.info.upAxis, 0, 2)], m_scene.info.unitScaleFactor,
@@ -290,7 +300,7 @@ void Editor::DrawHistory() {
 // インポート / エクスポート設定
 // ---------------------------------------------------------------------------
 void Editor::DrawImportWindow() {
-    ImGui::SetNextWindowSize(ImVec2(460, 520), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(Px(460), Px(520)), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin(PanelTitle(ICON_IMPORT, "インポート設定", "ImportSettings").c_str(), &m_panels.importWin)) { ImGui::End(); return; }
     ImportOptions& o = m_importOpts;
     ImGui::Combo("読み込みモード", &m_importMode, "シーンを置き換え\0現在のシーンに追加\0アニメーションのみ (名前で対応付け)\0");
@@ -304,7 +314,7 @@ void Editor::DrawImportWindow() {
     ImGui::Checkbox("三角形化", &o.triangulate);
     ImGui::Checkbox("法線が無ければ生成", &o.generateNormals);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(80);
+    ImGui::SetNextItemWidth(Px(80));
     ImGui::SliderFloat("角度", &o.smoothingAngle, 0, 180, "%.0f°");
     ImGui::Checkbox("接線を計算 (glTF 規約)", &o.calcTangents);
     ImGui::Checkbox("同一頂点を結合", &o.joinVertices);
@@ -341,7 +351,7 @@ void Editor::DrawImportWindow() {
 }
 
 void Editor::DrawExportWindow() {
-    ImGui::SetNextWindowSize(ImVec2(480, 560), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(Px(480), Px(560)), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin(PanelTitle(ICON_EXPORT, "エクスポート", "ExportSettings").c_str(), &m_panels.exportWin)) { ImGui::End(); return; }
     ExportOptions& o = m_exportOpts;
     int fmt = (int)o.format;
@@ -392,6 +402,11 @@ void Editor::DrawExportWindow() {
     ImGui::Checkbox("表示中のノードのみ", &o.onlyVisible);
     ImGui::Checkbox("ウェイトを正規化", &o.normalizeWeights);
     ImGui::Checkbox("ノード名を一意にする (推奨)", &o.uniquifyNames);
+    if (!gltf) {
+        ImGui::SetNextItemWidth(Px(110));
+        ImGui::DragFloat("曲線のキーの刻み (fps)", &o.curveBakeFps, 1.0f, 10.0f, 240.0f, "%.0f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("カーブエディタで作った曲線は、この形式では直線のキーに置き換えて書き出します。\n数を大きくするほど曲線に近くなります (glTF は曲線のまま書き出します)");
+    }
     ImGui::SeparatorText("テクスチャ");
     if (o.format == ExportFormat::GLB) ImGui::TextDisabled("GLB ではテクスチャはファイル内に埋め込まれます");
     if (o.format == ExportFormat::GLTF_Embedded) ImGui::TextDisabled("base64 で .gltf に埋め込まれます");
@@ -428,7 +443,7 @@ void Editor::DrawExportWindow() {
     if (errors) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "検証エラーが %d 件あります (検証パネルを確認)", errors);
 
     ImGui::Separator();
-    if (!m_lastExportPath.empty()) ImGui::TextWrapped("前回: %s", m_lastExportPath.c_str());
+    if (!m_lastExportPath.empty()) EllipsisText("前回: ", m_lastExportPath);
     ImGui::BeginDisabled(m_scene.Empty());
     if (ImGui::Button("書き出し...", ImVec2(140, 0))) ExportDialog();
     ImGui::SameLine();
@@ -443,7 +458,7 @@ void Editor::DrawExportWindow() {
 // 一括リネーム
 // ---------------------------------------------------------------------------
 void Editor::DrawBatchRename() {
-    ImGui::SetNextWindowSize(ImVec2(420, 380), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(Px(420), Px(380)), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin(PanelTitle(ICON_WRENCH, "一括リネーム", "BatchRename").c_str(), &m_panels.batchRename)) { ImGui::End(); return; }
     ImGui::InputText("検索", &m_batchFind);
     ImGui::InputText("置換", &m_batchReplace);
@@ -484,9 +499,10 @@ void Editor::DrawBatchRename() {
 // 環境設定 / ヘルプ / ダンプ
 // ---------------------------------------------------------------------------
 void Editor::DrawSettings() {
-    ImGui::SetNextWindowSize(ImVec2(420, 300), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(Px(420), Px(300)), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin(PanelTitle(ICON_SETTINGS, "環境設定", "Settings").c_str(), &m_panels.settings)) { ImGui::End(); return; }
-    if (ImGui::SliderFloat("UI スケール (再起動で反映)", &m_uiScale, 0.75f, 2.5f)) {}
+    ImGui::SliderFloat("UI の倍率", &m_uiScale, 0.75f, 2.0f, "x%.2f");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("文字とボタンの大きさ。ウィンドウの大きさと画面の DPI にも自動で合わせます (マウスを離すと反映)");
     int undoMax = (int)m_undo.MaxEntries();
     if (ImGui::SliderInt("Undo の最大数", &undoMax, 1, 200)) m_undo.SetMaxEntries(undoMax);
     ImGui::Checkbox("自動検証", &m_autoValidate);
@@ -495,14 +511,14 @@ void Editor::DrawSettings() {
     ImGui::Checkbox("左ドラッグでカメラ回転 (オフ: Maya と同じく矩形選択)", &m_lmbOrbit);
     ImGui::ColorEdit3("背景色", &m_rs.bgColor.x);
     ImGui::SliderInt("MSAA", &m_rs.msaa, 0, 8);
-    ImGui::TextDisabled("設定ファイル: %s", m_settingsPath.c_str());
+    EllipsisText("設定ファイル: ", m_settingsPath, true);
     if (ImGui::Button("設定フォルダを開く")) Dialogs::OpenInExplorer(m_settingsPath);
     if (ImGui::Button("保存")) SaveSettings();
     ImGui::End();
 }
 
 void Editor::DrawHelp() {
-    ImGui::SetNextWindowSize(ImVec2(560, 520), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(Px(560), Px(520)), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin(PanelTitle(ICON_HELP, "画面の見かた・操作方法", "Help").c_str(), &m_panels.help)) { ImGui::End(); return; }
     ImGui::SeparatorText("画面の見かた (Unity / Unreal Engine と同じ配置)");
     if (ImGui::BeginTable("##guide", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
@@ -553,7 +569,7 @@ void Editor::DrawHelp() {
 }
 
 void Editor::DrawDump() {
-    ImGui::SetNextWindowSize(ImVec2(640, 560), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(Px(640), Px(560)), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin(PanelTitle(ICON_CONSOLE, "シーンダンプ", "Dump").c_str(), &m_panels.dump)) { ImGui::End(); return; }
     if (ImGui::Button("テキストで更新")) m_dumpText = DumpSceneText(m_scene);
     ImGui::SameLine();

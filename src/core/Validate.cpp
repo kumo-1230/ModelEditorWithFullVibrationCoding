@@ -313,6 +313,7 @@ std::vector<Issue> ValidateScene(const Scene& scene) {
             for (size_t i = 1; i < c.times.size(); ++i) if (c.times[i] < c.times[i - 1]) sorted = false;
             if (!sorted) { add(Severity::Error, "アニメーション", Fmt("'%s' のキー時間が昇順ではありません", a.name.c_str())); break; }
             if (c.values.size() != c.times.size()) { add(Severity::Error, "アニメーション", Fmt("'%s' のキー数と値の数が一致しません", a.name.c_str())); break; }
+            if (c.interp == Interp::CubicSpline && !c.IsCubic()) { add(Severity::Error, "アニメーション", Fmt("'%s' の曲線の接線の数がキーの数と一致しません", a.name.c_str())); break; }
         }
     }
     for (int ai = 0; ai < (int)scene.animations.size(); ++ai) {

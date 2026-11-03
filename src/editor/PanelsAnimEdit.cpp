@@ -24,7 +24,7 @@ void Diamond(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
 } // namespace
 
 void Editor::DrawAnimEditor() {
-    ImGui::SetNextWindowSize(ImVec2(900, 420), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(Px(900), Px(420)), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin(PanelTitle(ICON_ANIMATION, "アニメーション編集", "AnimEditor").c_str(), &m_panels.animEditor)) { ImGui::End(); return; }
     PanelHint("Maya のドープシートのように編集します。上の目盛りで再生位置、青い範囲で切り抜き / カット、行 (ノード) を選んでキーの削除ができます");
     DrawModelFilterBar();
@@ -60,7 +60,7 @@ void Editor::DrawAnimEditor() {
     };
 
     // ---- クリップと長さ ----
-    ImGui::SetNextItemWidth(220);
+    ImGui::SetNextItemWidth(Px(220));
     if (ImGui::BeginCombo("クリップ", anim.name.c_str())) {
         for (int i = 0; i < (int)m_scene.animations.size(); ++i) {
             if (!InMask(animMask, i)) continue;
@@ -76,10 +76,10 @@ void Editor::DrawAnimEditor() {
     // ---- 範囲 ----
     ImGui::SeparatorText("範囲 (イン / アウト)");
     float inF = m_rangeIn * kFps, outF = m_rangeOut * kFps;
-    ImGui::SetNextItemWidth(110);
+    ImGui::SetNextItemWidth(Px(110));
     if (ImGui::DragFloat("開始 (フレーム)", &inF, 0.25f, 0.0f, anim.duration * kFps, "%.1f")) m_rangeIn = std::clamp(inF / kFps, 0.0f, m_rangeOut);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(110);
+    ImGui::SetNextItemWidth(Px(110));
     if (ImGui::DragFloat("終了 (フレーム)", &outF, 0.25f, 0.0f, anim.duration * kFps, "%.1f")) m_rangeOut = std::clamp(outF / kFps, m_rangeIn, anim.duration);
     ImGui::SameLine();
     if (ImGui::SmallButton("再生位置を開始に")) m_rangeIn = std::min(m_animTime, m_rangeOut);
@@ -128,7 +128,7 @@ void Editor::DrawAnimEditor() {
     // ---- 速度 ----
     ImGui::SeparatorText("速度");
     static float speed = 1.5f;
-    ImGui::SetNextItemWidth(90);
+    ImGui::SetNextItemWidth(Px(90));
     ImGui::InputFloat("倍速", &speed, 0, 0, "%.3g");
     speed = std::clamp(speed, 0.01f, 100.0f);
     ImGui::SameLine();
@@ -182,7 +182,7 @@ void Editor::DrawAnimEditor() {
     m_dopeSel.erase(std::remove_if(m_dopeSel.begin(), m_dopeSel.end(), [&](int n) { return !rowsByNode.count(n); }), m_dopeSel.end());
     auto isSel = [&](int n) { return std::find(m_dopeSel.begin(), m_dopeSel.end(), n) != m_dopeSel.end(); };
 
-    ImGui::SetNextItemWidth(200);
+    ImGui::SetNextItemWidth(Px(200));
     ImGui::InputTextWithHint("##dopeFilter", "ノード名で絞り込み", &m_dopeFilter);
     ImGui::SameLine();
     if (ImGui::SmallButton("全部選ぶ")) { m_dopeSel.clear(); for (auto& r : rows) m_dopeSel.push_back(r.node); }
@@ -227,7 +227,7 @@ void Editor::DrawAnimEditor() {
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(80);
+    ImGui::SetNextItemWidth(Px(80));
     ImGui::DragFloat("##tol", &m_reduceTol, 0.0001f, 0.0f, 0.1f, "%.4f");
     ImGui::SameLine();
     if (ImGui::Button("キーを間引く")) {
@@ -241,7 +241,7 @@ void Editor::DrawAnimEditor() {
 
     // 目盛り + 行
     const float dur = std::max(anim.duration, 1e-4f);
-    const float nameW = 200.0f;
+    const float nameW = Px(200);
     if (ImGui::BeginTable("##dope", 2, ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV, ImVec2(0, 0))) {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("ノード", ImGuiTableColumnFlags_WidthFixed, nameW);

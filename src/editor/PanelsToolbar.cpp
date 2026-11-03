@@ -18,9 +18,10 @@ float UiScale() { return ImGui::GetFontSize() / 15.0f; }
 
 void Tooltip(const char* tip) {
     if (tip && *tip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_DelayShort)) {
-        ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(420 * UiScale(), FLT_MAX));
         ImGui::BeginTooltip();
-        ImGui::PushTextWrapPos(0.0f);
+        // 折り返し位置は固定の幅で決める。0 (ウィンドウの右端) にすると、ツールチップは中身に合わせて幅を決めるので
+        // 「幅が狭い → 折り返す → さらに狭い」となり、1 文字ずつの縦書きになってしまう
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::min(Px(420), ImGui::GetMainViewport()->WorkSize.x * 0.5f));
         ImGui::TextUnformatted(tip);
         ImGui::PopTextWrapPos();
         ImGui::EndTooltip();
@@ -101,7 +102,7 @@ void Editor::DrawMainToolbar() {
     if (ImGui::BeginViewportSideBar("##MainToolbar", vp, ImGuiDir_Up, height, flags)) {
         const bool hasScene = !m_scene.Empty();
         // ファイル
-        if (LabelButton(ICON_OPEN, "開く", "モデルを開く (Ctrl+O)\nFBX / glTF / GLB / OBJ / VRM などを読み込みます。ウィンドウにドラッグ&ドロップしても開けます")) {
+        if (LabelButton(ICON_OPEN, "開く", "モデルを読み込む (Ctrl+O)\nFBX / glTF / GLB / OBJ / VRM などを今のシーンに追加します。\nダイアログで Ctrl / Shift を押すと複数のファイルをまとめて選べます。フォルダごと読み込むときは「ファイル > フォルダからまとめて読み込み」。\nウィンドウに何個でもドラッグ&ドロップできます")) {
             m_importMode = 1;
             OpenDialog();
         }
@@ -291,6 +292,8 @@ void Editor::DrawWelcome(const ImVec2& pos, const ImVec2& size) {
     if (LabelButton(ICON_OPEN, "ファイルを開く... (Ctrl+O)", "モデルファイルを選んで開きます")) { m_importMode = 1; OpenDialog(); }
     ImGui::SameLine();
     if (LabelButton(ICON_MESH, "立方体を置いて試す", "練習用に立方体を作ります (作成メニューから他の形も作れます)")) CreatePrimitiveObject(Ops::Prim_Cube);
+    SameLineIfFits(IconText(ICON_FOLDER, "フォルダから読み込む").c_str());
+    if (LabelButton(ICON_FOLDER, "フォルダから読み込む", "フォルダの中のモデルをまとめて読み込みます")) ImportFolderDialog(false);
     if (!m_recent.empty()) {
         ImGui::Spacing();
         ImGui::SeparatorText("最近使ったファイル");
