@@ -39,12 +39,20 @@ int Editor::AddRuler() {
 }
 
 void Editor::ChangeModelUnit(int newUnit) {
-    int old = m_scene.info.modelUnit;
+    const int model = ActiveModel();
+    int old = ModelInfo(model).modelUnit;
     if (newUnit == old || newUnit < 0 || newUnit >= Unit_Count) return;
     double f = UnitToMeters(newUnit) / UnitToMeters(old >= 0 ? old : Unit_M);
     Checkpoint(std::string("単位を ") + UnitSuffix(newUnit) + " に変更");
-    Ops::ScaleScene(m_scene, (float)f);
-    m_scene.info.modelUnit = newUnit;
+    if (m_scene.roots.size() > 1 && model >= 0) {
+        // 複数モデル: 選んでいるモデルの中身だけを拡大縮小する (他のモデルはそのまま)
+        std::string e;
+        if (!Ops::ScaleModelContents(m_scene, model, (float)f, &e)) { LOG_ERROR("単位を変更できません: %s", e.c_str()); return; }
+    } else {
+        Ops::ScaleScene(m_scene, (float)f);
+        m_scene.info.modelUnit = newUnit;
+    }
+    ModelInfoMut(model).modelUnit = newUnit;
     MarkChanged();
     UpdateWorld();
     FrameAll();
@@ -132,12 +140,13 @@ void Editor::DrawRulerLabels(const ImVec2& pos, const ImVec2& size, const glm::m
 }
 
 void Editor::DrawMeasure() {
-    if (!ImGui::Begin("単位 / 定規###Measure", &m_panels.measure)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_RULER, "単位 / 定規", "Measure").c_str(), &m_panels.measure)) { ImGui::End(); return; }
+    PanelHint("モデルの実寸の確認、単位の修正、定規の配置、指定サイズや倍率での拡大縮小を行います");
     const double unitM = UnitToMeters(m_displayUnit);
 
     // ---- 単位 ---------------------------------------------------------------
     ImGui::SeparatorText("モデルの長さの単位");
-    SceneInfo& info = m_scene.info;
+    const SceneInfo& info = ModelInfo(ActiveModel()); // 複数モデルなら選んでいるモデルの情報
     if (m_scene.Empty()) {
         ImGui::TextDisabled("モデルが読み込まれていません");
     } else {
@@ -200,9 +209,9 @@ void Editor::DrawMeasure() {
         ImGui::SameLine();
         if (ImGui::Button("この大きさにする")) {
             // トランスフォームのスケールで変更 (選択があれば選択、無ければ全オブジェクト)
-            ScaleTargetsToSize(FitTargetsForSelection(), m_targetAxis, (float)(m_targetSize * unitM), nullptr, false, false, "サイズ指定でリサイズ");
+            ScaleTargetsToSize(FitTargetsForSelection(false), m_targetAxis, (float)(m_targetSize * unitM), nullptr, false, false, "サイズ指定でリサイズ");
         }
-        ImGui::TextDisabled("対象: %s (トランスフォームのスケールを変更します)", m_selection.empty() ? "全オブジェクト" : "選択中のオブジェクト");
+        ImGui::TextDisabled("対象: %s (トランスフォームのスケールを変更します)", FitTargetLabel(false).c_str());
 
         ImGui::SeparatorText("倍率で拡大縮小");
         ImGui::SetNextItemWidth(120);
@@ -217,6 +226,7 @@ void Editor::DrawMeasure() {
             if (q != 0.01f) ImGui::SameLine();
             if (ImGui::SmallButton(lbl)) ScaleTargetsToSize(FitTargetsForSelection(), 1, 0.0f, nullptr, false, false, "倍率で拡大縮小", q);
         }
+        ImGui::TextDisabled("対象: %s", FitTargetLabel(true).c_str());
         ImGui::TextDisabled("オブジェクトの原点 (ピボット) を中心に拡大縮小します (原点は動きません)。アニメーション付きのモデルは親 (オブジェクト) で拡大するので、\nルートモーションも同じ倍率になります");
     }
 
@@ -299,7 +309,7 @@ void Editor::DrawMeasure() {
 
         // 選択モデルを定規の高さに合わせる
         ImGui::SeparatorText("選択モデルを定規の高さに合わせる");
-        auto targets = FitTargetsForSelection();
+        auto targets = FitTargetsForSelection(false);
         glm::vec3 tmn, tmx;
         bool hasBounds = !m_scene.Empty() && ComputeTargetsBounds(targets, tmn, tmx);
         if (hasBounds) {

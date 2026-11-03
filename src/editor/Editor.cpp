@@ -35,6 +35,7 @@ bool Editor::Init(void* hwnd, ID3D11Device* device, ID3D11DeviceContext* ctx, co
     }
     m_settingsPath = FileUtil::Join(FileUtil::AppDataDir(), "ModelEditor_settings.ini");
     LoadSettings();
+    LoadUserPresets();
     UpdateWorld();
     LOG_INFO("エディターを起動しました。ファイルをウィンドウにドラッグ&ドロップするか、ファイル > 開く で読み込めます。");
     return true;
@@ -169,9 +170,10 @@ void Editor::DuplicateSelected() {
 
 void Editor::FrameAll() {
     UpdateWorld();
-    m_scene.ComputeBounds(m_world, m_sceneMin, m_sceneMax);
-    if (m_scene.Empty()) { m_sceneMin = glm::vec3(-1); m_sceneMax = glm::vec3(1); }
-    m_camera.Frame(m_sceneMin, m_sceneMax);
+    glm::vec3 mn, mx;
+    m_scene.ComputeBounds(m_world, mn, mx);
+    if (m_scene.Empty()) { mn = glm::vec3(-1); mx = glm::vec3(1); }
+    m_camera.Frame(mn, mx);
 }
 
 void Editor::FocusNode(int node) {
@@ -246,11 +248,18 @@ void Editor::UpdateWorld() {
     m_pose = m_scene.RestPose();
     if (m_anim >= 0 && m_anim < (int)m_scene.animations.size()) SampleAnimation(m_scene, m_scene.animations[m_anim], m_animTime, m_pose);
     m_world = m_scene.ComputeWorldMatrices(m_pose);
-    if (m_poseSceneRev != m_sceneRevision) {
+    const int activeModel = ActiveModel();
+    if (m_poseSceneRev != m_sceneRevision || m_boundsModel != activeModel) {
         // シーンの大きさ (グリッド間隔・カメラのクリップ・法線の長さに使う) はレストポーズ基準で、
         // シーンが編集された時だけ更新する。アニメーション再生中に変化させるとグリッドが伸縮してしまう
-        m_scene.ComputeBounds(m_scene.ComputeWorldMatrices(), m_sceneMin, m_sceneMax);
-        m_sceneRadius = std::max(glm::length(m_sceneMax - m_sceneMin) * 0.5f, 1e-3f);
+        glm::vec3 mn, mx;
+        m_scene.ComputeBounds(m_scene.ComputeWorldMatrices(), mn, mx);
+        m_sceneRadius = std::max(glm::length(mx - mn) * 0.5f, 1e-3f);
+        // 実寸・定規・診断に使う大きさは、選んでいるモデルだけで測る (モデルが複数あるとき)
+        m_sceneMin = mn;
+        m_sceneMax = mx;
+        if (activeModel >= 0 && m_scene.roots.size() > 1) ComputeTargetsBounds({ activeModel }, m_sceneMin, m_sceneMax);
+        m_boundsModel = activeModel;
     }
     if (m_poseSceneRev != m_sceneRevision || m_poseAnimTime != m_animTime || m_poseAnim != m_anim) {
         ++m_poseRev;
@@ -282,7 +291,7 @@ void Editor::OpenDialog() {
     if (!path.empty()) StartImport(path, m_importMode);
 }
 
-void Editor::OpenFile(const std::string& path) { StartImport(path, 0); }
+void Editor::OpenFile(const std::string& path, bool add) { StartImport(path, add ? 1 : 0); }
 
 void Editor::StartImport(const std::string& path, int mode) {
     if (m_importing) {
@@ -332,54 +341,74 @@ void Editor::FinishImport(ImportResult& r) {
         return;
     }
     int mode = m_importModeRunning;
-    if (mode == 3) mode = m_scene.Empty() ? 0 : 1; // 自動: 空なら置き換え、あれば追加
+    if (mode == 3) mode = 1; // 既定 (Maya の読み込みと同じ): 今のシーンに追加する
     if (mode == 2) {
         Checkpoint("アニメーション取り込み");
-        int unmatched = 0;
         size_t before = m_scene.animations.size();
-        int matched = Ops::ImportAnimationsByName(m_scene, r.scene, &unmatched);
-        LOG_INFO("アニメーション %zu 個を取り込みました (対応チャンネル %d, 未対応 %d)", m_scene.animations.size() - before, matched, unmatched);
+        const int target = ActiveModel();
+        if (target >= 0) {
+            // 選んでいるモデルのボーンへ名前で対応付ける (他のモデルの同名ボーンには付けない)
+            size_t rootsBefore = m_scene.roots.size();
+            Ops::AppendScene(m_scene, r.scene);
+            int tmp = Ops::GroupRootsAsModel(m_scene, "__anim_import", rootsBefore);
+            Ops::RetargetReport rep;
+            Ops::CopyAnimationsBetweenModels(m_scene, tmp, target, {}, m_retarget, &rep);
+            m_scene.RemoveNodes({ tmp }); // 一時的に足したファイルの中身 (とそのアニメーション) を消す
+            m_scene.animations.erase(std::remove_if(m_scene.animations.begin() + before, m_scene.animations.end(), [](const Animation& a) { return a.channels.empty(); }),
+                                     m_scene.animations.end());
+            size_t added = m_scene.animations.size() - before;
+            Ops::RemoveUnusedResources(m_scene);
+            LOG_INFO("アニメーション %zu 個を '%s' に取り込みました (対応したボーン %d、見つからないボーン %zu)", added, m_scene.nodes[target].name.c_str(),
+                     rep.matchedBones, rep.unmatched.size());
+        } else {
+            int unmatched = 0;
+            int matched = Ops::ImportAnimationsByName(m_scene, r.scene, &unmatched);
+            LOG_INFO("アニメーション %zu 個を取り込みました (対応チャンネル %d, 未対応 %d)", m_scene.animations.size() - before, matched, unmatched);
+        }
+        m_renderer.ClearCaches();
         if (m_scene.animations.size() > before) { m_anim = (int)before; m_animTime = 0; m_playing = true; }
         MarkChanged();
         return;
     }
-    if (mode == 1 && !m_scene.Empty()) {
-        Checkpoint("シーンに追加");
-        size_t rootsBefore = m_scene.roots.size();
-        Ops::AppendScene(m_scene, r.scene);
-        // 追加したファイルを 1 つのオブジェクト (ファイル名のグループ) にまとめる
-        std::vector<int> newRoots(m_scene.roots.begin() + rootsBefore, m_scene.roots.end());
-        int group = m_scene.AddNode(FileUtil::Stem(r.path), -1);
-        for (int nr : newRoots) m_scene.Reparent(nr, group, false);
-        m_scene.nodes[group].objectRoot = true;
-        ClearSelection();
-        Select(group);
-        LOG_INFO("'%s' をオブジェクト '%s' として追加しました (オブジェクト数 %zu)", FileUtil::Filename(r.path).c_str(),
-                 m_scene.nodes[group].name.c_str(), m_scene.roots.size());
-        MarkChanged();
-        return;
+    // ファイルごとに 1 つのグループ (= 1 モデル) にまとめて追加する (Maya の読み込みと同じ)。
+    // mode 0 は今のシーンを閉じてから開く
+    const bool replace = mode == 0 || m_scene.Empty();
+    const bool wasDirty = m_dirty; // 読み込んだだけでは「未書き出しの変更あり」にしない
+    if (mode == 0 && !m_scene.Empty()) Checkpoint("ファイルを開く (置き換え)");
+    else if (!m_scene.Empty()) Checkpoint("読み込み (追加)");
+    if (mode == 0) {
+        m_scene.Clear();
+        m_renderer.ClearCaches();
     }
-    if (!m_scene.Empty()) Checkpoint("ファイルを開く");
-    m_scene = std::move(r.scene);
-    m_currentPath = r.path;
-    m_renderer.ClearCaches();
+    if (m_scene.Empty()) m_scene.info = r.scene.info;
+    const size_t rootsBefore = m_scene.roots.size(), meshesBefore = m_scene.meshes.size(), matsBefore = m_scene.materials.size();
+    const size_t texBefore = m_scene.textures.size(), animsBefore = m_scene.animations.size();
+    Ops::AppendScene(m_scene, r.scene);
+    int group = Ops::GroupRootsAsModel(m_scene, FileUtil::Stem(r.path), rootsBefore);
+    auto info = std::make_shared<SceneInfo>(r.scene.info);
+    info->sourcePath = r.path;
+    m_scene.nodes[group].modelInfo = info;
     m_vertexHitValid = false;
     m_topoCache.clear();
     ClearSelection();
-    m_selMesh = m_scene.meshes.empty() ? -1 : 0;
-    m_selMaterial = m_scene.materials.empty() ? -1 : 0;
-    m_selTexture = m_scene.textures.empty() ? -1 : 0;
+    Select(group);
+    m_selMesh = m_scene.meshes.size() > meshesBefore ? (int)meshesBefore : (m_scene.meshes.empty() ? -1 : 0);
+    m_selMaterial = m_scene.materials.size() > matsBefore ? (int)matsBefore : (m_scene.materials.empty() ? -1 : 0);
+    m_selTexture = m_scene.textures.size() > texBefore ? (int)texBefore : (m_scene.textures.empty() ? -1 : 0);
     m_selBone = -1;
     m_selSkin = 0;
-    m_anim = m_scene.animations.empty() ? -1 : 0;
+    m_anim = m_scene.animations.size() > animsBefore ? (int)animsBefore : -1;
     m_animTime = 0;
     m_playing = false;
     ValidateSelection();
     MarkChanged();
-    m_dirty = false;
+    m_dirty = replace ? false : wasDirty;
+    m_currentPath = r.path;
     AddRecent(r.path);
+    LOG_INFO("'%s' をモデル '%s' として読み込みました (モデル数 %zu)", FileUtil::Filename(r.path).c_str(), m_scene.nodes[group].name.c_str(),
+             m_scene.roots.size());
     FrameAll();
-    std::string title = "ModelEditor - " + FileUtil::Filename(r.path);
+    std::string title = "ModelEditor - " + (m_scene.roots.size() > 1 ? std::to_string(m_scene.roots.size()) + " モデル" : FileUtil::Filename(r.path));
     {
         std::wstring wt = FileUtil::ToPath(title).wstring();
         SetWindowTextW((HWND)m_window, wt.c_str());
@@ -392,7 +421,7 @@ void Editor::FinishImport(ImportResult& r) {
         if (m_rulerAfterLoad != 0.0f) m_rulers[r].height = m_rulerAfterLoad;
         m_hasRulerAfterLoad = false;
     }
-    if (!m_selectAfterLoad.empty()) {
+    if (!m_selectAfterLoad.empty() && m_importQueue.empty()) { // 複数ファイルなら最後のファイルを読み終えてから
         int n = m_scene.FindNode(m_selectAfterLoad);
         if (n >= 0) Select(n);
         m_selectAfterLoad.clear();
@@ -404,9 +433,15 @@ static const char* kExportFilter =
     "DirectX (*.x)\0*.x\0" "3MF (*.3mf)\0*.3mf\0" "3ds Max (*.3ds)\0*.3ds\0";
 
 void Editor::ExportDialog() {
-    std::string base = m_currentPath.empty() ? "untitled" : FileUtil::Stem(m_currentPath);
+    // 既定では読み込んだファイルのフォルダで開く (読み込んでいなければ前回の書き出し先)。
+    // モデルが複数あるときは、選んでいるモデルの元ファイルの名前とフォルダを使う
+    std::string src = m_currentPath;
+    const int model = ActiveModel();
+    if (m_scene.roots.size() > 1 && m_exportScope == 0 && model >= 0) src = ModelInfo(model).sourcePath;
+    std::string base = src.empty() ? (model >= 0 && m_scene.roots.size() > 1 ? m_scene.nodes[model].name : "untitled") : FileUtil::Stem(src);
+    std::string dir = !src.empty() ? FileUtil::Directory(src) : !m_lastExportPath.empty() ? FileUtil::Directory(m_lastExportPath) : "";
     std::string ext = ExportFormatExt(m_exportOpts.format);
-    std::string path = Dialogs::SaveFile(kExportFilter, base + ext, ext.c_str(), "書き出し");
+    std::string path = Dialogs::SaveFile(kExportFilter, base + ext, ext.c_str(), "書き出し", dir);
     if (!path.empty()) DoExport(path);
 }
 
@@ -416,7 +451,15 @@ bool Editor::DoExport(const std::string& path) {
     opts.format = ExportFormatFromPath(path, m_exportOpts.format);
     bool ok = false;
     try {
-        ok = ExportScene(m_scene, path, opts, err);
+        // モデルが複数あるときは、選んでいるモデルだけを書き出す (書き出し設定でシーン全体にもできる)
+        const int model = ActiveModel();
+        if (m_scene.roots.size() > 1 && m_exportScope == 0 && model >= 0) {
+            Scene part = Ops::ExtractModel(m_scene, model);
+            LOG_INFO("モデル '%s' だけを書き出します", m_scene.nodes[model].name.c_str());
+            ok = ExportScene(part, path, opts, err);
+        } else {
+            ok = ExportScene(m_scene, path, opts, err);
+        }
     } catch (const std::exception& e) {
         err = std::string("例外: ") + e.what();
     } catch (...) {
@@ -548,6 +591,9 @@ void Editor::LoadSettings() {
         else if (k == "imp_search") m_importOpts.textureSearchDirs.push_back(v);
         else if (k == "exp_format") m_exportOpts.format = (ExportFormat)std::clamp(atoi(v.c_str()), 0, (int)ExportFormat::Count - 1);
         else if (k == "exp_texdir") m_exportOpts.textureSubdir = v;
+        else if (k == "exp_texmode") m_exportOpts.textureFolderMode = std::clamp(atoi(v.c_str()), 0, 1);
+        else if (k == "panel_hints") m_showPanelHints = b();
+        else if (k == "layout_ver") m_layoutVersion = atoi(v.c_str());
         else if (k == "exp_verify") m_exportOpts.verifyAfterExport = b();
         else if (k == "exp_embed_fbx") m_exportOpts.embedTexturesFBX = b();
         else if (k == "exp_objscale") m_exportOpts.objectScaleMode = std::clamp(atoi(v.c_str()), 0, 1);
@@ -574,7 +620,8 @@ void Editor::SaveSettings() {
     o << "imp_tangents=" << m_importOpts.calcTangents << "\nimp_join=" << m_importOpts.joinVertices << "\nimp_flipuv=" << m_importOpts.flipUV << "\n";
     o << "imp_pivots=" << m_importOpts.preservePivots << "\nimp_scale=" << m_importOpts.extraScale << "\n";
     for (auto& d : m_importOpts.textureSearchDirs) o << "imp_search=" << d << "\n";
-    o << "exp_format=" << (int)m_exportOpts.format << "\nexp_texdir=" << m_exportOpts.textureSubdir << "\n";
+    o << "exp_format=" << (int)m_exportOpts.format << "\nexp_texdir=" << m_exportOpts.textureSubdir << "\nexp_texmode=" << m_exportOpts.textureFolderMode << "\n";
+    o << "panel_hints=" << m_showPanelHints << "\nlayout_ver=" << m_layoutVersion << "\n";
     o << "exp_verify=" << m_exportOpts.verifyAfterExport << "\nexp_embed_fbx=" << m_exportOpts.embedTexturesFBX << "\n";
     o << "exp_objscale=" << m_exportOpts.objectScaleMode << "\nexp_objdissolve=" << m_exportOpts.dissolveObjectWrappers << "\n";
     o << "undo_max=" << m_undo.MaxEntries() << "\nauto_validate=" << m_autoValidate << "\n";
@@ -599,6 +646,7 @@ void Editor::Frame() {
     m_renderer.BeginFrame();
     PollImport();
     HandleShortcuts();
+    Membership(); // 選んでいるモデルが変わったら、そのモデルのアニメーションに切り替える
     UpdateAnimation(io.DeltaTime);
     UpdateWorld();
 
@@ -609,10 +657,14 @@ void Editor::Frame() {
     }
 
     DrawMainMenu();
+    DrawMainToolbar();
+    DrawStatusBar();
     ImGuiID dockId = ImGui::DockSpaceOverViewport(ImGui::GetID("MainDock"), ImGui::GetMainViewport());
     if (m_firstFrame) {
         ImGuiDockNode* node = ImGui::DockBuilderGetNode(dockId);
         if (!node || node->IsLeafNode()) m_resetLayout = true; // ini が無い初回
+        constexpr int kLayoutVersion = 3;                       // 2: Unity / Unreal Engine 風の配置 3: モデル・アニメーション編集パネルを追加
+        if (m_layoutVersion < kLayoutVersion) { m_resetLayout = true; m_layoutVersion = kLayoutVersion; }
         m_firstFrame = false;
     }
     if (m_resetLayout) {
@@ -642,15 +694,17 @@ void Editor::Frame() {
     if (m_panels.dump) DrawDump();
     if (m_panels.measure) DrawMeasure();
     if (m_panels.diagnostics) DrawDiagnostics();
+    if (m_panels.models) DrawModels();
+    if (m_panels.animEditor) DrawAnimEditor();
     if (m_panels.imguiDemo) ImGui::ShowDemoWindow(&m_panels.imguiDemo);
     if (m_panels.imguiMetrics) ImGui::ShowMetricsWindow(&m_panels.imguiMetrics);
     DrawImportingPopup();
     DrawQuitConfirm();
     if (m_smokeTest) SmokeTestStep();
-    // デバッグ用: 指定ウィンドウを前面に (タブを切り替える)
+    // 指定ウィンドウを前面に (タブを切り替える)。1 フレームに 1 つずつ (同じフレームで複数にすると最後の 1 つしかタブが切り替わらない)
     if (++m_frameIndex > 3 && !m_focusWindows.empty()) {
-        for (auto& w : m_focusWindows) ImGui::SetWindowFocus(w.c_str());
-        m_focusWindows.clear();
+        ImGui::SetWindowFocus(m_focusWindows.front().c_str());
+        m_focusWindows.erase(m_focusWindows.begin());
     }
 
     m_lastFrameMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frameStart).count();
@@ -661,28 +715,35 @@ void Editor::SetupDockLayout(unsigned dockId) {
     ImGui::DockBuilderRemoveNode(dockId);
     ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(dockId, vp->WorkSize);
+    // Unity の既定配置に合わせる:
+    //   左 = 階層 / 中央 = ビューポート / 右 = インスペクター (縦いっぱい)
+    //   下の左 = アセット (メッシュ・マテリアル・テクスチャ・スケルトン) / 下の右 = アニメーション・問題の確認・ログ
+    // (ウィンドウ名は ### の後ろだけで識別されるので、表示名のアイコンが変わっても同じウィンドウになる)
     ImGuiID center = dockId;
-    ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.26f, nullptr, &center);
+    ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25f, nullptr, &center);
+    ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.33f, nullptr, &center);
+    ImGuiID bottomRight = ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Right, 0.56f, nullptr, &bottom);
     ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.22f, nullptr, &center);
-    ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.30f, nullptr, &center);
-    ImGuiID leftBottom = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.42f, nullptr, &left);
-    ImGuiID rightBottom = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.45f, nullptr, &right);
-    ImGui::DockBuilderDockWindow("ビューポート###Viewport", center);
-    ImGui::DockBuilderDockWindow("階層###Hierarchy", left);
-    ImGui::DockBuilderDockWindow("スケルトン###Skeleton", leftBottom);
-    ImGui::DockBuilderDockWindow("シーン情報###SceneInfo", leftBottom);
-    ImGui::DockBuilderDockWindow("単位 / 定規###Measure", leftBottom);
-    ImGui::DockBuilderDockWindow("インスペクター###Inspector", right);
-    ImGui::DockBuilderDockWindow("メッシュ###Meshes", rightBottom);
-    ImGui::DockBuilderDockWindow("マテリアル###Materials", rightBottom);
-    ImGui::DockBuilderDockWindow("テクスチャ###Textures", rightBottom);
-    ImGui::DockBuilderDockWindow("アニメーション###Animation", bottom);
-    ImGui::DockBuilderDockWindow("コンソール###Console", bottom);
-    ImGui::DockBuilderDockWindow("検証###Validation", bottom);
-    ImGui::DockBuilderDockWindow("モデル診断###Diagnostics", bottom);
-    ImGui::DockBuilderDockWindow("統計 / デバッグ###Stats", bottom);
-    ImGui::DockBuilderDockWindow("履歴###History", bottom);
+    ImGui::DockBuilderDockWindow("###Viewport", center);
+    ImGui::DockBuilderDockWindow("###Hierarchy", left);
+    ImGui::DockBuilderDockWindow("###Inspector", right);
+    ImGui::DockBuilderDockWindow("###Models", right);
+    ImGui::DockBuilderDockWindow("###Measure", right);
+    ImGui::DockBuilderDockWindow("###SceneInfo", right);
+    ImGui::DockBuilderDockWindow("###Meshes", bottom);
+    ImGui::DockBuilderDockWindow("###Materials", bottom);
+    ImGui::DockBuilderDockWindow("###Textures", bottom);
+    ImGui::DockBuilderDockWindow("###Skeleton", bottom);
+    ImGui::DockBuilderDockWindow("###Animation", bottomRight);
+    ImGui::DockBuilderDockWindow("###Validation", bottomRight);
+    ImGui::DockBuilderDockWindow("###Diagnostics", bottomRight);
+    ImGui::DockBuilderDockWindow("###Console", bottomRight);
+    ImGui::DockBuilderDockWindow("###Stats", bottomRight);
+    ImGui::DockBuilderDockWindow("###History", bottomRight);
+    ImGui::DockBuilderDockWindow("###AnimEditor", bottomRight);
     ImGui::DockBuilderFinish(dockId);
+    // 最初に前に出しておくタブ
+    m_focusWindows.insert(m_focusWindows.begin(), { "###Inspector", "###Meshes", "###Animation", "###Viewport" });
 }
 
 void Editor::HandleShortcuts() {
@@ -741,12 +802,9 @@ void Editor::DrawMainMenu() {
     if (!ImGui::BeginMainMenuBar()) return;
     if (ImGui::BeginMenu("ファイル")) {
         if (ImGui::MenuItem("新規シーン", "Ctrl+N")) NewScene();
-        if (ImGui::MenuItem("開く...", "Ctrl+O")) { m_importMode = 0; OpenDialog(); }
-        if (ImGui::MenuItem("シーンに追加読み込み...")) {
-            std::string p = Dialogs::OpenFile(ImportFileFilter(), "追加で読み込む");
-            if (!p.empty()) StartImport(p, 1);
-        }
-        if (ImGui::MenuItem("アニメーションのみ取り込み (名前で対応付け)...")) {
+        if (ImGui::MenuItem("読み込み (シーンに追加)...", "Ctrl+O")) { m_importMode = 1; OpenDialog(); }
+        if (ImGui::MenuItem("開く (今のシーンを閉じてから)...")) { m_importMode = 0; OpenDialog(); m_importMode = 1; }
+        if (ImGui::MenuItem("アニメーションのみ取り込み (選んでいるモデルへ名前で対応付け)...")) {
             std::string p = Dialogs::OpenFile(ImportFileFilter(), "アニメーションを取り込む");
             if (!p.empty()) StartImport(p, 2);
         }
@@ -927,6 +985,9 @@ void Editor::DrawMainMenu() {
         ImGui::MenuItem("シーン情報", nullptr, &m_panels.sceneInfo);
         ImGui::MenuItem("単位 / 実寸 / 定規", nullptr, &m_panels.measure);
         ImGui::MenuItem("モデル診断 (穴・裏返り・ウェイト・アニメーション)", nullptr, &m_panels.diagnostics);
+        ImGui::MenuItem("モデル (一覧・結合・抜き取り)", nullptr, &m_panels.models);
+        ImGui::MenuItem("アニメーション編集 (ドープシート)", nullptr, &m_panels.animEditor);
+        ImGui::MenuItem("パネルの説明を表示", nullptr, &m_showPanelHints);
         ImGui::Separator();
         if (ImGui::BeginMenu("表示モード")) {
             for (int i = 0; i < RM_Count; ++i)
@@ -981,22 +1042,11 @@ void Editor::DrawMainMenu() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("ヘルプ")) {
-        ImGui::MenuItem("操作方法", "F1", &m_panels.help);
+        ImGui::MenuItem("画面の見かた・操作方法", "F1", &m_panels.help);
         ImGui::EndMenu();
     }
     if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) m_panels.help = !m_panels.help;
-
-    // 右端にステータス
-    std::string status = m_currentPath.empty() ? "(無題)" : FileUtil::Filename(m_currentPath);
-    if (m_dirty) status += " *";
-    if (m_importing) status = "読み込み中... " + FileUtil::Filename(m_importingPath);
-    int errors = 0, warns = 0;
-    for (auto& is : m_issues) { if (is.severity == Severity::Error) ++errors; else if (is.severity == Severity::Warning) ++warns; }
-    char buf[256];
-    snprintf(buf, sizeof(buf), "%s  |  エラー %d 警告 %d  |  %.0f FPS", status.c_str(), errors, warns, ImGui::GetIO().Framerate);
-    float w = ImGui::CalcTextSize(buf).x;
-    ImGui::SameLine(ImGui::GetWindowWidth() - w - 20);
-    ImGui::TextColored(errors ? ImVec4(1, 0.45f, 0.4f, 1) : ImVec4(0.7f, 0.8f, 0.7f, 1), "%s", buf);
+    // ファイル名・問題の数・FPS は画面下のステータスバーに出す
     ImGui::EndMainMenuBar();
 }
 
@@ -1047,6 +1097,36 @@ void Editor::SmokeTestStep() {
     step(2, "全パネルを開く", [&] {
         m_panels.stats = m_panels.sceneInfo = m_panels.history = m_panels.uvViewer = m_panels.exportWin = true;
         m_panels.importWin = m_panels.batchRename = m_panels.settings = m_panels.help = m_panels.dump = true;
+        m_panels.models = m_panels.animEditor = true;
+    });
+    step(3, "複数ファイル: アニメーションを別のモデルへコピー", [&] {
+        // 複数のファイルを読み込んで始めたとき: 各モデルのアニメーションを、メッシュを持つ他のモデルへコピーしてみる
+        // (例: Player.glb と Player_motion.glb)
+        bool copied = false; // 1 組だけ試す
+        for (int dst : std::vector<int>(m_scene.roots)) {
+            if (copied) break;
+            auto dsub = Ops::SubtreeMask(m_scene, dst);
+            bool dstHasMesh = false;
+            for (int i = 0; i < (int)dsub.size(); ++i) if (dsub[i] && m_scene.nodes[i].mesh >= 0) dstHasMesh = true;
+            if (!dstHasMesh) continue;
+            for (int srcM : std::vector<int>(m_scene.roots)) {
+                if (srcM == dst) continue;
+                Ops::RetargetReport rep;
+                auto added = Ops::CopyAnimationsBetweenModels(m_scene, srcM, dst, {}, m_retarget, &rep);
+                if (added.empty()) continue;
+                LOG_INFO("[smoke] '%s' → '%s' にアニメーション %zu 個 (対応ボーン %d / 見つからない %zu / 身長比 %.3f)", m_scene.nodes[srcM].name.c_str(),
+                         m_scene.nodes[dst].name.c_str(), added.size(), rep.matchedBones, rep.unmatched.size(), rep.heightRatio);
+                for (size_t k = 0; k < rep.unmatched.size() && k < 8; ++k) LOG_INFO("[smoke]   見つからないボーン: %s", rep.unmatched[k].c_str());
+                MarkChanged();
+                ClearSelection();
+                Select(dst);
+                m_member.rev = 0;
+                m_anim = added[0];
+                m_animTime = m_scene.animations[added[0]].duration * 0.5f;
+                copied = true;
+                break;
+            }
+        }
     });
     step(4, "全ノードを順に選択", [&] { for (int i = 0; i < (int)m_scene.nodes.size(); ++i) Select(i); });
     step(6, "表示モード: ウェイト", [&] { m_rs.mode = RM_Weights; });
@@ -1308,6 +1388,118 @@ void Editor::SmokeTestStep() {
         for (const char* n : { "smoke.glb", "smoke.gltf", "smoke.fbx", "smoke.obj", "smoke.x", "smoke.3mf", "smoke.3ds" })
             if (!DoExport(FileUtil::FromPath(dir / n))) ++m_smokeErrors;
     });
+    step(63, "複数モデル / 結合 / 抜き取り / アニメーション編集 / プリセット / 検証のダブルクリック", [&] {
+        if (m_scene.Empty()) return;
+        auto fail = [&](const char* what) { LOG_ERROR("[smoke] %s", what); ++m_smokeErrors; };
+        ClearSelection();
+        Select(m_scene.roots[0]);
+        const int src = ActiveModel();
+        const bool hasAnim = Membership().animations.end() != std::find(Membership().animations.begin(), Membership().animations.end(), 1);
+        int animCount = 0;
+        for (char c : Membership().animations) animCount += c;
+        // モデルだけ / アニメーションだけを抜き出して、モデルを増やす
+        m_extractRemove = false;
+        ExtractFromActiveModel(false);
+        int meshModel = ActiveModel();
+        int animModel = -1;
+        if (hasAnim) {
+            ClearSelection();
+            Select(m_scene.roots[0]);
+            ExtractFromActiveModel(true);
+            animModel = ActiveModel();
+        }
+        UpdateWorld();
+        LOG_INFO("[smoke] モデル数 %zu (元 %d / モデルだけ %d / アニメだけ %d)", m_scene.roots.size(), src, meshModel, animModel);
+        if (m_scene.roots.size() < 2 || meshModel < 0) fail("抜き出しでモデルが増えていません");
+        // 選んだモデルだけの一覧と大きさ
+        ClearSelection();
+        Select(meshModel);
+        UpdateWorld();
+        {
+            const auto& M = Membership();
+            int a = 0;
+            for (char c : M.animations) a += c;
+            if (a != 0) fail("モデルだけのモデルにアニメーションが含まれています");
+            glm::vec3 mn, mx;
+            ComputeTargetsBounds({ meshModel }, mn, mx);
+            if (glm::length(mn - m_sceneMin) + glm::length(mx - m_sceneMax) > 1e-4f) fail("実寸が選んだモデルの大きさになっていません");
+        }
+        // アニメーションだけ → モデルだけ へコピー
+        if (animModel >= 0) {
+            Ops::RetargetReport rep;
+            auto added = Ops::CopyAnimationsBetweenModels(m_scene, animModel, meshModel, {}, m_retarget, &rep);
+            LOG_INFO("[smoke] アニメーションのコピー: %zu 個 / 対応ボーン %d / 未対応 %zu", added.size(), rep.matchedBones, rep.unmatched.size());
+            if ((int)added.size() != animCount || !rep.unmatched.empty()) fail("アニメーションのコピーが不完全です");
+            MarkChanged();
+            m_member.rev = 0;
+            ClearSelection();
+            Select(meshModel);
+            int a = 0;
+            for (char c : Membership().animations) a += c;
+            if (a != animCount) fail("コピーしたアニメーションが選んだモデルの一覧に出ません");
+            // アニメーション編集 (コピーしたクリップで)
+            if (!added.empty()) {
+                Animation& an = m_scene.animations[added[0]];
+                float D = an.duration;
+                Animation part = Ops::ExtractAnimationRange(an, D * 0.2f, D * 0.6f, an.name + "_part");
+                Ops::CutAnimationRange(an, D * 0.1f, D * 0.3f);
+                if (std::abs(an.duration - D * 0.8f) > 1e-4f || std::abs(part.duration - D * 0.4f) > 1e-4f) fail("カット / 分割の長さが不正です");
+                m_scene.animations.push_back(part);
+                if (!an.channels.empty()) Ops::RemoveChannelsForNodes(an, { an.channels[0].node }, 7);
+                Ops::ReduceKeys(an, 0.001f);
+                m_anim = added[0];
+                MarkChanged();
+            }
+        }
+        // 選んだモデルだけを書き出して読み直す
+        {
+            auto dir = std::filesystem::temp_directory_path() / "ModelEditorSmoke";
+            std::filesystem::create_directories(dir);
+            std::string out = FileUtil::FromPath(dir / "smoke_model_only.glb");
+            m_exportScope = 0;
+            Scene expect = Ops::ExtractModel(m_scene, meshModel);
+            if (!DoExport(out)) fail("選んだモデルだけの書き出しに失敗しました");
+            Scene re;
+            std::string e;
+            if (ImportModel(out, m_importOpts, re, e)) {
+                LOG_INFO("[smoke] 選んだモデルだけ書き出し: 三角形 %zu (期待 %zu) / アニメ %zu (期待 %zu)", re.TotalTriangles(), expect.TotalTriangles(),
+                         re.animations.size(), expect.animations.size());
+                if (re.TotalTriangles() != expect.TotalTriangles() || re.animations.size() != expect.animations.size()) fail("書き出した中身が選んだモデルと違います");
+            } else {
+                fail("書き出したファイルを読めません");
+            }
+        }
+        // モデルを付ける / まとめる
+        if (animModel >= 0) {
+            int target = -1;
+            auto sub = Ops::SubtreeMask(m_scene, meshModel);
+            for (int i = 0; i < (int)sub.size(); ++i) if (sub[i] && i != meshModel) { target = i; break; }
+            std::string e;
+            if (target >= 0 && !Ops::AttachModel(m_scene, animModel, target, true, &e)) fail("モデルを付けられません");
+            MarkChanged();
+        }
+        if (m_scene.roots.size() >= 2) {
+            int r = Ops::MergeModels(m_scene, m_scene.roots.back(), m_scene.roots.front());
+            if (r < 0) fail("モデルをまとめられません");
+            MarkChanged();
+        }
+        ValidateSelection();
+        // 表示プリセット: 組み込みを全部適用して、最後に標準に戻す
+        for (auto& p : BuiltinPresets()) ApplyViewPreset(p);
+        {
+            ViewPreset mine = CaptureViewPreset("smoke");
+            ApplyViewPreset(BuiltinPresets()[0]);
+            ApplyViewPreset(mine);
+            ApplyViewPreset(BuiltinPresets()[0]);
+            if (m_rs.mode != RenderSettings().mode || m_rs.showGrid != RenderSettings().showGrid) fail("「標準」プリセットで既定に戻りません");
+        }
+        // 検証のダブルクリック: すべての行で関連表示を開く
+        m_issues = ValidateScene(m_scene);
+        m_issuesRevision = m_sceneRevision;
+        for (auto is : m_issues) RevealIssue(is);
+        LOG_INFO("[smoke] 検証のダブルクリック: %zu 件", m_issues.size());
+        ApplyViewPreset(BuiltinPresets()[0]);
+    });
     step(64, "ピック", [&] { m_pickRequested = true; m_pickPos = ImVec2(m_viewportPos.x + m_viewportSize.x * 0.5f, m_viewportPos.y + m_viewportSize.y * 0.5f); });
     step(66, "新規シーン", [&] { NewScene(); });
     step(70, "終了", finish);
@@ -1428,9 +1620,12 @@ bool Editor::ComputeTargetsBounds(const std::vector<int>& targets, glm::vec3& mn
     return any;
 }
 
-std::vector<int> Editor::FitTargetsForSelection() {
+std::vector<int> Editor::FitTargetsForSelection(bool allSelected) {
     std::vector<int> targets = TopLevelTargets();
-    if (targets.empty()) targets = m_scene.roots;
+    // 複数選択でも、サイズ指定・定規合わせは主に選んだもの (最後にクリックしたもの) だけ。倍率とトランスフォームは全部にそろえて適用する
+    if (!allSelected && targets.size() > 1 && m_primary >= 0) targets = { m_primary };
+    // 何も選んでいなければ、選んでいるモデル (1 つだけならそれ)、決められなければ全部
+    if (targets.empty()) targets = ActiveModel() >= 0 ? std::vector<int>{ ActiveModel() } : m_scene.roots;
     // スキンメッシュはメッシュノードの変換が無視されるので、スケルトンのルートも対象に加える
     std::vector<int> extra;
     for (int t : targets) {

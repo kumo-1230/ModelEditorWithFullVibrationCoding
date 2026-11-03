@@ -440,6 +440,18 @@ bool CenterPivot(Scene& scene, int nodeIdx, std::string* err) {
     Node& node = scene.nodes[nodeIdx];
     if (node.mesh < 0) { if (err) *err = "メッシュがありません。"; return false; }
     if (node.skin >= 0) { if (err) *err = "スキンメッシュのピボットは変更できません。"; return false; }
+    // アニメーションで回転・拡大するノードは、ピボットを動かすと動きが変わってしまうので対象外。
+    // 移動だけのアニメーションなら、移動キーもピボットの移動分ずらす
+    bool animT = false;
+    for (auto& a : scene.animations)
+        for (auto& ch : a.channels)
+            if (ch.node == nodeIdx) {
+                if (ch.path != AnimPath::Translation) {
+                    if (err) *err = "アニメーションで回転・スケールするノードのピボットは変更できません。";
+                    return false;
+                }
+                animT = true;
+            }
     glm::vec3 mn(std::numeric_limits<float>::max()), mx(-std::numeric_limits<float>::max());
     for (auto& p : scene.meshes[node.mesh].primitives) {
         glm::vec3 a, b;
@@ -453,7 +465,14 @@ bool CenterPivot(Scene& scene, int nodeIdx, std::string* err) {
     for (auto& p : scene.meshes[m].primitives) TransformPrimitive(p, Tm);
     scene.meshes[m].Touch();
     Node& nd = scene.nodes[nodeIdx];
-    nd.SetLocalMatrix(nd.LocalMatrix() * glm::translate(glm::mat4(1), c));
+    // ローカル行列 T R S に右から T(c) を掛ける = 移動に R S c を足す (回転・拡大は変わらない)
+    const glm::vec3 offset = nd.rotation * (nd.scale * c);
+    nd.translation += offset;
+    if (animT)
+        for (auto& a : scene.animations)
+            for (auto& ch : a.channels)
+                if (ch.node == nodeIdx && ch.path == AnimPath::Translation)
+                    for (auto& v : ch.values) v = glm::vec4(glm::vec3(v) + offset, 0.0f);
     for (int ch : nd.children) PremultiplyChildTransform(scene, ch, glm::translate(glm::mat4(1), -c));
     return true;
 }

@@ -11,7 +11,7 @@
 
 void Editor::DrawViewport() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    bool open = ImGui::Begin("ビューポート###Viewport", &m_panels.viewport, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    bool open = ImGui::Begin(PanelTitle(ICON_VIEWPORT, "ビューポート", "Viewport").c_str(), &m_panels.viewport, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar();
     if (!open) {
         m_viewportHovered = false;
@@ -65,17 +65,12 @@ void Editor::DrawViewport() {
     ImGui::Image((ImTextureID)(intptr_t)m_renderer.ColorTexture(), size);
     m_viewportHovered = ImGui::IsItemHovered();
 
-    // ファイルのドロップ先としても使えることを示す
-    if (m_scene.Empty() && !m_importing) {
-        const char* msg = "FBX / glTF / GLB / OBJ をここにドラッグ&ドロップ (または Ctrl+O)";
-        ImVec2 ts = ImGui::CalcTextSize(msg);
-        ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x + (size.x - ts.x) * 0.5f, pos.y + size.y * 0.5f), IM_COL32(220, 220, 220, 200), msg);
-    }
-
     DrawRulerLabels(pos, size, m_camera.Projection(size.x / size.y) * m_camera.View());
     DrawGizmo(pos, size);
     HandleViewportInput(pos, size);
     DrawViewportOverlay(pos, size);
+    // 何も開いていなければ、何をすればよいかを案内する (ファイルのドロップ先でもある)
+    if (m_scene.Empty() && !m_importing) DrawWelcome(pos, size);
     ImGui::End();
 }
 
@@ -106,7 +101,7 @@ void Editor::DrawGizmo(const ImVec2& pos, const ImVec2& size) {
     {
         glm::mat4 v = view;
         float cubeSize = 96.0f;
-        ImGuizmo::ViewManipulate(glm::value_ptr(v), m_camera.distance, ImVec2(pos.x + size.x - cubeSize - 8, pos.y + 36), ImVec2(cubeSize, cubeSize), 0x10101010);
+        ImGuizmo::ViewManipulate(glm::value_ptr(v), m_camera.distance, ImVec2(pos.x + size.x - cubeSize - 8, pos.y + ImGui::GetFrameHeight() + 16), ImVec2(cubeSize, cubeSize), 0x10101010);
         if (v != view) {
             glm::mat4 inv = glm::inverse(v);
             glm::vec3 camPos(inv[3]);
@@ -285,47 +280,47 @@ void Editor::SelectInRect(const ImVec2& a, const ImVec2& b, const ImVec2& vpPos,
     LOG_DEBUG("矩形選択: %zu 個", hits.size());
 }
 
+// ビューポート左上の表示ツールバー (Unreal Engine のビューポート上部と同じく「どう見せるか」だけを置く)。
+// 編集ツール (移動・回転など) は画面上のメインツールバーにある
 void Editor::DrawToolbar() {
-    auto toggle = [](const char* label, bool active) {
-        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-        bool pressed = ImGui::Button(label);
-        if (active) ImGui::PopStyleColor();
+    auto tip = [](const char* text) {
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", text);
+    };
+    auto toggle = [&](const char* icon, const char* label, bool active, const char* tipText) {
+        if (active) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.44f, 0.88f, 0.95f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.53f, 0.96f, 1.0f));
+        }
+        bool pressed = ImGui::Button(IconText(icon, label).c_str());
+        if (active) ImGui::PopStyleColor(2);
+        tip(tipText);
         return pressed;
     };
-    if (toggle("選択 Q", m_gizmoOp == 3)) m_gizmoOp = 3;
-    ImGui::SameLine();
-    if (toggle("移動 W", m_gizmoOp == 0)) m_gizmoOp = 0;
-    ImGui::SameLine();
-    if (toggle("回転 E", m_gizmoOp == 1)) m_gizmoOp = 1;
-    ImGui::SameLine();
-    if (toggle("スケール R", m_gizmoOp == 2)) m_gizmoOp = 2;
-    ImGui::SameLine();
-    if (toggle(m_gizmoLocal ? "ローカル" : "ワールド", false)) m_gizmoLocal = !m_gizmoLocal;
-    ImGui::SameLine();
-    if (toggle("スナップ", m_snap)) m_snap = !m_snap;
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(140);
-    if (ImGui::BeginCombo("##mode", RenderModeName(m_rs.mode))) {
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize("ウェイト (選択ボーン)").x + ImGui::GetFrameHeight() * 2);
+    if (ImGui::BeginCombo("##mode", IconText(ICON_LIGHT, RenderModeName(m_rs.mode)).c_str())) {
         for (int i = 0; i < RM_Count; ++i)
             if (ImGui::Selectable(RenderModeName(i), m_rs.mode == i)) m_rs.mode = i;
         ImGui::EndCombo();
     }
+    tip("表示モード\nライティング (完成イメージ) のほか、法線・UV・ウェイト・裏面などを色で確認できます");
     ImGui::SameLine();
-    if (toggle("ワイヤー", m_rs.wireframe || m_rs.wireOnShaded)) {
+    const char* wireLabel = m_rs.wireframe ? "ワイヤーのみ" : "ワイヤー";
+    if (toggle(ICON_WIRE, wireLabel, m_rs.wireframe || m_rs.wireOnShaded, "ワイヤーフレーム (4)\n押すたびに  なし → 面 + 線 → 線のみ  と切り替わります")) {
         if (!m_rs.wireframe && !m_rs.wireOnShaded) m_rs.wireOnShaded = true;
         else if (m_rs.wireOnShaded) { m_rs.wireOnShaded = false; m_rs.wireframe = true; }
         else m_rs.wireframe = false;
     }
     ImGui::SameLine();
-    if (toggle("テクスチャ", m_rs.useTextures)) m_rs.useTextures = !m_rs.useTextures;
+    if (toggle(ICON_TEXTURE, "テクスチャ", m_rs.useTextures, "テクスチャ (6)\nオフにすると画像を貼らずに形だけを確認できます")) m_rs.useTextures = !m_rs.useTextures;
     ImGui::SameLine();
-    if (toggle("ボーン", m_rs.showBones)) m_rs.showBones = !m_rs.showBones;
+    if (toggle(ICON_SKELETON, "ボーン", m_rs.showBones, "ボーン (骨格) を表示")) m_rs.showBones = !m_rs.showBones;
     ImGui::SameLine();
-    if (toggle("法線", m_rs.showNormals)) m_rs.showNormals = !m_rs.showNormals;
+    if (toggle(ICON_NORMALS, "法線", m_rs.showNormals, "法線 (面の向き) を線で表示\n長さや対象は「表示」で変えられます")) m_rs.showNormals = !m_rs.showNormals;
     ImGui::SameLine();
-    if (toggle("グリッド", m_rs.showGrid)) m_rs.showGrid = !m_rs.showGrid;
+    if (toggle(ICON_GRID, "グリッド", m_rs.showGrid, "床のグリッド\n1 マスの大きさは「表示」で変えられます")) m_rs.showGrid = !m_rs.showGrid;
     ImGui::SameLine();
-    if (ImGui::Button("表示...")) ImGui::OpenPopup("ViewOptions");
+    if (ImGui::Button(IconText(ICON_EYE, "表示 ▼").c_str())) ImGui::OpenPopup("ViewOptions");
+    tip("そのほかの表示設定\nライト・背景色・グリッド・スナップの刻み・視野角など");
     if (ImGui::BeginPopup("ViewOptions")) {
         ImGui::Checkbox("シェード + ワイヤー", &m_rs.wireOnShaded);
         ImGui::Checkbox("ワイヤーフレームのみ", &m_rs.wireframe);
@@ -377,25 +372,20 @@ void Editor::DrawToolbar() {
         ImGui::DragFloat("スケールスナップ", &m_snapS, 0.01f, 0.01f, 10.0f);
         ImGui::EndPopup();
     }
-    ImGui::SameLine();
-    if (ImGui::Button("全体表示")) FrameAll();
-    ImGui::SameLine();
-    if (toggle("定規", m_panels.measure && !m_rulers.empty())) {
-        m_panels.measure = true;
-        if (m_rulers.empty()) AddRuler();
-    }
 }
 
 void Editor::DrawViewportOverlay(const ImVec2& pos, const ImVec2& size) {
-    // ツールバー
-    ImGui::SetCursorScreenPos(ImVec2(pos.x + 6, pos.y + 6));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 3));
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.16f, 0.18f, 0.85f));
+    // 表示ツールバー
+    ImGui::SetCursorScreenPos(ImVec2(pos.x + 8, pos.y + 8));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 4));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 4));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.09f, 0.09f, 0.09f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.09f, 0.09f, 0.09f, 0.85f));
     ImGui::BeginGroup();
     DrawToolbar();
     ImGui::EndGroup();
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(2);
 
     // 統計
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -412,14 +402,14 @@ void Editor::DrawViewportOverlay(const ImVec2& pos, const ImVec2& size) {
     }
     if (m_anim >= 0 && m_anim < (int)m_scene.animations.size()) {
         snprintf(buf, sizeof(buf), "%s %s  %.2f / %.2f s", m_playing ? "再生中" : "停止", m_scene.animations[m_anim].name.c_str(), m_animTime, m_scene.animations[m_anim].duration);
-        dl->AddText(ImVec2(pos.x + 8, pos.y + 36), IM_COL32(150, 230, 150, 230), buf);
+        dl->AddText(ImVec2(pos.x + 8, pos.y + ImGui::GetFrameHeight() + 16), IM_COL32(150, 230, 150, 230), buf);
     }
     // 実寸サイズ
     if (m_showSizeOverlay && !m_scene.Empty()) {
         glm::vec3 d = m_sceneMax - m_sceneMin;
         std::string s = "実寸  幅 " + FormatLength(d.x, m_displayUnit) + "  ×  高さ " + FormatLength(d.y, m_displayUnit) + "  ×  奥行 " + FormatLength(d.z, m_displayUnit);
         ImVec2 ts = ImGui::CalcTextSize(s.c_str());
-        ImVec2 p0(pos.x + 10, pos.y + 58);
+        ImVec2 p0(pos.x + 10, pos.y + ImGui::GetFrameHeight() + 40);
         dl->AddRectFilled(ImVec2(p0.x - 6, p0.y - 3), ImVec2(p0.x + ts.x + 6, p0.y + ts.y + 3), IM_COL32(20, 22, 26, 190), 4.0f);
         dl->AddText(p0, IM_COL32(255, 225, 120, 255), s.c_str());
     }

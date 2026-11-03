@@ -2,6 +2,7 @@
 #include "Cli.h"
 #include "core/Diagnostics.h"
 #include "core/Log.h"
+#include "core/ModelOps.h"
 #include "core/SceneOps.h"
 #include "core/Validate.h"
 #include "io/Exporter.h"
@@ -310,6 +311,187 @@ bool RunSelfTest(const std::string& path, int& exitCode) {
         printf("[%s] 書き出し→再読み込み %-6s AABB誤差=%.3g  頂点 %zu→%zu  スキン %zu→%zu  アニメ %zu→%zu %s\n", pass ? "PASS" : "FAIL", ext, e,
                base.TotalVertices(), re.TotalVertices(), base.skins.size(), re.skins.size(), base.animations.size(), re.animations.size(),
                ok ? "" : err.c_str());
+    }
+    // ---- 複数モデル: 抜き出し / アニメーションのコピー (名前の違うボーンへ) / 抜き取り ----
+    if (!base.animations.empty()) {
+        auto exactCheck = [&](const char* name, const Scene& ref, const Scene& s) {
+            int frames = 0;
+            float e = Ops::MaxMotionError(ref, s, 30.0f, &frames);
+            bool pass = e >= 0 && e <= tol;
+            if (!pass) ++failed;
+            printf("[%s] %-40s 全 %d フレーム 最大誤差=%.3g\n", pass ? "PASS" : "FAIL", name, frames, e);
+        };
+        auto dissolve = [](Scene s) { Ops::BakeObjectScales(s, true); return s; };
+        Scene two;
+        Ops::AppendScene(two, base);
+        Ops::GroupRootsAsModel(two, "A", 0);
+        size_t r0 = two.roots.size();
+        Ops::AppendScene(two, base);
+        int mB = Ops::GroupRootsAsModel(two, "B", r0);
+        Scene exB = Ops::ExtractModel(two, mB);
+        bool ok = two.roots.size() == 2 && exB.roots.size() == 1 && exB.animations.size() == base.animations.size();
+        if (!ok) ++failed;
+        printf("[%s] 2 つのモデル → B だけを抜き出す  モデル %zu / アニメ %zu\n", ok ? "PASS" : "FAIL", two.roots.size(), exB.animations.size());
+        exactCheck("抜き出した B = 元のモデル", base, dissolve(exB));
+
+        // アニメーションだけ (ボーン名に mixamorig: を付ける) → モデルだけ へコピー
+        for (int mode = 0; mode < 2; ++mode) {
+            Scene meshOnly = base, animOnly = base;
+            Ops::StripAnimations(meshOnly);
+            Ops::StripToAnimationOnly(animOnly);
+            for (auto& n : animOnly.nodes) n.name = "mixamorig:" + n.name;
+            Scene t;
+            Ops::AppendScene(t, meshOnly);
+            int mMesh = Ops::GroupRootsAsModel(t, "Mesh", 0);
+            size_t r1 = t.roots.size();
+            Ops::AppendScene(t, animOnly);
+            int mAnim = Ops::GroupRootsAsModel(t, "Motion", r1);
+            Ops::RetargetOptions opt;
+            opt.mode = mode;
+            opt.otherTranslations = true;
+            opt.scaleKeys = true;
+            Ops::RetargetReport rep;
+            auto added = Ops::CopyAnimationsBetweenModels(t, mAnim, mMesh, {}, opt, &rep);
+            bool okCopy = animOnly.meshes.empty() && added.size() == base.animations.size() && rep.unmatched.empty();
+            if (!okCopy) ++failed;
+            printf("[%s] アニメだけ → モデルだけへコピー (方法 %d)  追加 %zu / 対応ボーン %d / 未対応 %zu / 身長比 %.3f\n", okCopy ? "PASS" : "FAIL", mode,
+                   added.size(), rep.matchedBones, rep.unmatched.size(), rep.heightRatio);
+            exactCheck(mode == 0 ? "コピーした動き = 元の動き (そのまま)" : "コピーした動き = 元の動き (差分補正)", base, dissolve(Ops::ExtractModel(t, mMesh)));
+        }
+        // 書き出す内容: アニメーションだけ / モデルだけ
+        for (int content = 1; content <= 2; ++content) {
+            std::string out = FileUtil::FromPath(tmpDir / (content == 1 ? "content_mesh.glb" : "content_anim.glb"));
+            ExportOptions eo;
+            eo.verifyAfterExport = false;
+            eo.content = content;
+            Scene re;
+            ImportOptions io2;
+            bool okE = ExportScene(base, out, eo, err) && ImportModel(out, io2, re, err);
+            bool pass = okE && (content == 1 ? (re.animations.empty() && !re.meshes.empty()) : (!re.animations.empty() && re.meshes.empty()));
+            if (!pass) ++failed;
+            printf("[%s] 書き出す内容 = %s  メッシュ %zu / アニメ %zu %s\n", pass ? "PASS" : "FAIL", content == 1 ? "モデルだけ" : "アニメーションだけ",
+                   re.meshes.size(), re.animations.size(), okE ? "" : err.c_str());
+        }
+        // モデルの中身だけの拡大 (単位の変更) = 親を x2 して焼き込んだのと同じ
+        {
+            Scene a = base, b = base;
+            int ga = Ops::GroupRootsAsModel(a, "M", 0);
+            int gb = Ops::GroupRootsAsModel(b, "M", 0);
+            Ops::ScaleModelContents(a, ga, 2.0f);
+            b.nodes[gb].scale = glm::vec3(2.0f);
+            Ops::BakeObjectScales(b, false);
+            int frames = 0;
+            float e = Ops::MaxMotionError(b, a, 30.0f, &frames);
+            bool pass = e >= 0 && e <= tol * 2;
+            if (!pass) ++failed;
+            printf("[%s] %-40s 全 %d フレーム 最大誤差=%.3g\n", pass ? "PASS" : "FAIL", "モデルの中身だけ x2 (単位の変更)", frames, e);
+        }
+    }
+    // ---- アニメーション編集: 切り抜き / カット / キー削除 / 間引き / チャンネル削除 ----
+    if (!base.animations.empty()) {
+        const Animation& src = base.animations[0];
+        const float D = src.duration;
+        auto poseErr = [&](const Animation& a, float ta, float tb) {
+            auto pa = base.RestPose(), pb = base.RestPose();
+            SampleAnimation(base, a, ta, pa);
+            SampleAnimation(base, src, tb, pb);
+            return MaxError(WorldPositions(base, pa), WorldPositions(base, pb));
+        };
+        auto report = [&](const char* name, bool pass, float e) {
+            if (!pass) ++failed;
+            printf("[%s] %-40s 誤差=%.3g\n", pass ? "PASS" : "FAIL", name, e);
+        };
+        {
+            Animation a = src;
+            Ops::TrimAnimation(a, D * 0.25f, D * 0.75f);
+            float e = 0;
+            for (int k = 0; k <= 20; ++k) e = std::max(e, poseErr(a, D * 0.5f * k / 20, D * 0.25f + D * 0.5f * k / 20));
+            report("切り抜き (25%〜75%)", std::abs(a.duration - D * 0.5f) < 1e-5f && e < 1e-4f, e);
+        }
+        {
+            Animation a = src;
+            Ops::CutAnimationRange(a, D * 0.25f, D * 0.5f);
+            float e = 0;
+            for (int k = 0; k <= 10; ++k) e = std::max(e, poseErr(a, D * 0.25f * k / 10, D * 0.25f * k / 10)); // 切る前は元のまま
+            for (int k = 1; k <= 10; ++k) { // 切った位置より後は 25% 先の動き
+                float t = D * 0.25f + D * 0.5f * k / 10;
+                e = std::max(e, poseErr(a, t, t + D * 0.25f));
+            }
+            report("カット (25%〜50% を削除して詰める)", std::abs(a.duration - D * 0.75f) < 1e-5f && e < 1e-4f, e);
+        }
+        {
+            Animation a = src;
+            int removedKeys = Ops::DeleteKeysInRange(a, {}, D * 0.25f, D * 0.75f);
+            float e = std::max(poseErr(a, D * 0.25f, D * 0.25f), poseErr(a, D * 0.75f, D * 0.75f));
+            e = std::max(e, std::max(poseErr(a, D * 0.1f, D * 0.1f), poseErr(a, D * 0.9f, D * 0.9f)));
+            report("範囲のキー削除 (範囲外と両端は同じ)", removedKeys > 0 && e < 1e-4f, e);
+        }
+        {
+            Animation a = src;
+            int n = Ops::ReduceKeys(a, 0.0f);
+            float e = 0;
+            for (int k = 0; k <= 30; ++k) e = std::max(e, poseErr(a, D * k / 30, D * k / 30));
+            report("キーの間引き (許容 0)", e < 1e-4f, e);
+            (void)n;
+        }
+        {
+            Animation a = src;
+            int node = a.channels.empty() ? -1 : a.channels[0].node;
+            int n = Ops::RemoveChannelsForNodes(a, { node }, 7);
+            bool none = true;
+            for (auto& c : a.channels) if (c.node == node) none = false;
+            report("ノードのアニメーションを消す", n > 0 && none, 0.0f);
+        }
+        {
+            bool okN = Ops::NormalizeBoneName("mixamorig:LeftUpLeg") == Ops::NormalizeBoneName("LeftUpLeg") &&
+                       Ops::NormalizeBoneName("Armature|Hips") == Ops::NormalizeBoneName("hips") &&
+                       Ops::NormalizeBoneName("Bip01_Spine") == Ops::NormalizeBoneName("spine");
+            report("ボーン名の正規化 (mixamorig: / Armature| / Bip01_)", okN, 0.0f);
+        }
+    }
+    // テクスチャフォルダの名前 (モデル名の命名規則に合わせる / 合わないものはキャメルケース)
+    for (auto [in, expect] : { std::pair{ "my_model", "my_model_texture" }, std::pair{ "MY_MODEL", "MY_MODEL_TEXTURE" }, std::pair{ "SK_Hero", "SK_Hero_Texture" },
+                               std::pair{ "Hero_01", "Hero_01_Texture" }, std::pair{ "my-model", "my-model-texture" }, std::pair{ "MyModel", "MyModelTexture" },
+                               std::pair{ "myModel", "myModelTexture" }, std::pair{ "robot", "robotTexture" }, std::pair{ "ROBOT", "robotTexture" },
+                               std::pair{ "my model v2", "myModelV2Texture" }, std::pair{ "My Model", "myModelTexture" }, std::pair{ "a_b-c", "aBCTexture" } }) {
+        std::string got = TextureFolderName(in);
+        bool pass = got == expect;
+        if (!pass) ++failed;
+        printf("[%s] テクスチャフォルダ名 %-14s → %s%s%s\n", pass ? "PASS" : "FAIL", in, got.c_str(), pass ? "" : "  期待: ", pass ? "" : expect);
+    }
+    // glTF (.gltf + .bin + 画像) でテクスチャが「モデル名 + Texture」フォルダにまとまり、読み込み直せるか
+    {
+        Scene ts = base;
+        Texture tex;
+        tex.name = "checker";
+        auto img = std::make_shared<ImageData>();
+        img->width = img->height = 4;
+        img->rgba.resize(4 * 4 * 4);
+        for (int i = 0; i < 16; ++i) for (int c = 0; c < 4; ++c) img->rgba[i * 4 + c] = (uint8_t)(c == 3 ? 255 : ((i + i / 4) % 2) * 255);
+        tex.image = img;
+        ts.textures.push_back(tex);
+        Material mat;
+        mat.name = "TexturedMat";
+        mat.slots[Slot_BaseColor].texture = (int)ts.textures.size() - 1; // 元のモデルのテクスチャの後ろに追加した画像
+        ts.materials.push_back(mat);
+        for (auto& m : ts.meshes) for (auto& p : m.primitives) p.material = (int)ts.materials.size() - 1;
+        auto dir = tmpDir / "texfolder";
+        std::filesystem::remove_all(dir);
+        std::filesystem::create_directories(dir);
+        std::string out = FileUtil::FromPath(dir / "My_Robot.gltf");
+        ExportOptions eo;
+        eo.verifyAfterExport = false;
+        bool ok = ExportScene(ts, out, eo, err);
+        bool inFolder = std::filesystem::exists(dir / "My_Robot_Texture" / "checker.png");
+        Scene re;
+        ImportOptions io2;
+        ok = ok && ImportModel(out, io2, re, err);
+        bool loaded = false; // 元のモデルのテクスチャもあるので、4x4 のものを探す
+        for (auto& rt : re.textures) if (!rt.missing && rt.Width() == 4 && rt.Height() == 4) loaded = ok;
+        bool pass = ok && inFolder && loaded;
+        if (!pass) ++failed;
+        printf("[%s] glTF のテクスチャを My_Robot_Texture/ にまとめる  フォルダ %s / 再読み込み %s %s\n", pass ? "PASS" : "FAIL", inFolder ? "OK" : "NG",
+               loaded ? "OK" : "NG", ok ? "" : err.c_str());
     }
     // アニメーションを持てない形式 / 単位・軸を変換する形式: レストポーズの大きさと位置が保たれるか
     for (const char* ext : { ".obj", ".x", ".3mf", ".3ds" }) {

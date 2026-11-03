@@ -2,6 +2,7 @@
 // GPU が使えない環境 (VM / リモートデスクトップ / 古いドライバ) でも WARP (ソフトウェア描画) で起動する。
 #include "core/Log.h"
 #include "editor/Editor.h"
+#include "editor/Icons.h"
 #include "io/ImageIO.h"
 #include "util/CrashHandler.h"
 #include "util/FileUtil.h"
@@ -181,30 +182,63 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-void LoadFonts(float scale) {
+// 本文フォント + アイコンフォント (Segoe Fluent Icons / MDL2) を合成したフォントを 1 つ作る
+ImFont* AddUiFont(const std::string& fontsDir, float size, bool bold) {
     ImGuiIO& io = ImGui::GetIO();
-    const float size = std::round(16.0f * scale);
-    ImFontConfig cfg;
-    cfg.OversampleH = 2;
-    cfg.OversampleV = 1;
     static ImVector<ImWchar> ranges;
     if (ranges.empty()) {
         ImFontGlyphRangesBuilder b;
         b.AddRanges(io.Fonts->GetGlyphRangesJapanese());
-        b.AddText("◆◇■□○●★☆→←↑↓×…°①②③④⑤ⅠⅡⅢ");
+        b.AddText("◆◇■□○●★☆→←↑↓×…°①②③④⑤ⅠⅡⅢ▶▼✓▣");
         b.BuildRanges(&ranges);
     }
-    // Windows 標準の日本語フォントを順に探す
+    // 読みやすさ優先: BIZ UDPゴシック (ユニバーサルデザイン) → Yu Gothic UI → Meiryo UI → 旧来のフォント
+    struct Candidate { const char* file; int face; };
+    const Candidate regular[] = { { "BIZ-UDGothicR.ttc", 1 }, { "YuGothM.ttc", 1 }, { "meiryo.ttc", 2 }, { "meiryo.ttc", 0 }, { "msgothic.ttc", 0 } };
+    const Candidate boldFaces[] = { { "BIZ-UDGothicB.ttc", 1 }, { "YuGothB.ttc", 1 }, { "meiryob.ttc", 2 } };
+    ImFont* font = nullptr;
+    auto tryList = [&](const Candidate* list, size_t n) {
+        for (size_t i = 0; i < n && !font; ++i) {
+            std::string path = fontsDir + list[i].file;
+            if (!FileUtil::Exists(path)) continue;
+            ImFontConfig cfg;
+            cfg.OversampleH = 3;
+            cfg.OversampleV = 1;
+            cfg.FontNo = list[i].face;
+            font = io.Fonts->AddFontFromFileTTF(path.c_str(), size, &cfg, ranges.Data);
+            if (font) LOG_INFO("フォント: %s #%d (%.0fpx)", path.c_str(), list[i].face, size);
+        }
+    };
+    if (bold) tryList(boldFaces, std::size(boldFaces));
+    tryList(regular, std::size(regular));
+    if (!font) return nullptr;
+    // アイコン (私用領域 U+E700〜U+F8FF) を同じフォントに合成する
+    static const ImWchar iconRanges[] = { 0xE700, 0xF8FF, 0 };
+    for (const char* f : { "SegoeIcons.ttf", "segmdl2.ttf" }) {
+        std::string path = fontsDir + f;
+        if (!FileUtil::Exists(path)) continue;
+        ImFontConfig ic;
+        ic.MergeMode = true;
+        ic.PixelSnapH = true;
+        ic.GlyphMinAdvanceX = size; // アイコンの幅をそろえる
+        ic.GlyphOffset = ImVec2(0, std::round(size * 0.12f));
+        if (io.Fonts->AddFontFromFileTTF(path.c_str(), size * 0.95f, &ic, iconRanges)) {
+            Icons::loaded = true;
+            break;
+        }
+    }
+    return font;
+}
+
+void LoadFonts(float scale) {
+    ImGuiIO& io = ImGui::GetIO();
     wchar_t winDir[MAX_PATH] = L"C:\\Windows";
     GetWindowsDirectoryW(winDir, MAX_PATH);
     std::string fonts = Narrow(winDir) + "\\Fonts\\";
-    const char* candidates[] = { "meiryo.ttc", "YuGothM.ttc", "YuGothR.ttc", "msgothic.ttc", "BIZ-UDGothicR.ttc", "meiryob.ttc" };
-    for (const char* f : candidates) {
-        std::string path = fonts + f;
-        if (FileUtil::Exists(path) && io.Fonts->AddFontFromFileTTF(path.c_str(), size, &cfg, ranges.Data)) {
-            LOG_INFO("フォント: %s (%.0fpx)", path.c_str(), size);
-            return;
-        }
+    if (AddUiFont(fonts, std::round(15.0f * scale), false)) {
+        Icons::large = AddUiFont(fonts, std::round(22.0f * scale), true);
+        if (!Icons::loaded) LOG_WARN("アイコンフォント (Segoe Fluent Icons / MDL2) が見つかりません。ボタンは文字で表示します");
+        return;
     }
     LOG_WARN("日本語フォントが見つかりませんでした。既定フォントを使用します (日本語は表示されません)");
     ImFontConfig def;
@@ -212,25 +246,99 @@ void LoadFonts(float scale) {
     io.Fonts->AddFontDefault(&def);
 }
 
+// Unreal Engine 5 に近い配色: 落ち着いたグレーの濃淡で領域を分け、青は「選択中・オン」だけに使う
 void ApplyStyle(float scale) {
     ImGui::StyleColorsDark();
     ImGuiStyle& s = ImGui::GetStyle();
-    s.WindowRounding = 4;
-    s.FrameRounding = 3;
-    s.GrabRounding = 3;
-    s.TabRounding = 3;
-    s.ScrollbarRounding = 4;
+    s.WindowRounding = 0;
+    s.ChildRounding = 4;
+    s.FrameRounding = 4;
+    s.PopupRounding = 6;
+    s.GrabRounding = 4;
+    s.TabRounding = 4;
+    s.ScrollbarRounding = 6;
     s.WindowBorderSize = 1;
-    s.FramePadding = ImVec2(6, 3);
-    s.ItemSpacing = ImVec2(7, 4);
+    s.FrameBorderSize = 1;
+    s.PopupBorderSize = 1;
+    s.TabBorderSize = 0;
+    s.TabBarBorderSize = 2;
+    s.TabBarOverlineSize = 2;
+    s.WindowPadding = ImVec2(10, 8);
+    s.FramePadding = ImVec2(8, 4);
+    s.ItemSpacing = ImVec2(8, 6);
+    s.ItemInnerSpacing = ImVec2(6, 4);
+    s.CellPadding = ImVec2(6, 3);
+    s.IndentSpacing = 16;
+    s.ScrollbarSize = 13;
+    s.GrabMinSize = 10;
+    s.SeparatorTextBorderSize = 1;
+    s.SeparatorTextPadding = ImVec2(10, 4);
+    s.WindowMenuButtonPosition = ImGuiDir_None; // タブ左の ▼ ボタンは使わない (分かりにくい)
+    s.DockingSeparatorSize = 3;
+
+    auto rgb = [](int r, int g, int b, float a = 1.0f) { return ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, a); };
+    const ImVec4 bg = rgb(36, 36, 36);          // パネル
+    const ImVec4 bgDark = rgb(21, 21, 21);      // タブバー / タイトル
+    const ImVec4 bgDeep = rgb(15, 15, 15);      // 入力欄
+    const ImVec4 bgRaised = rgb(47, 47, 47);    // ボタン / 見出し
+    const ImVec4 hover = rgb(64, 64, 64);
+    const ImVec4 border = rgb(58, 58, 58);
+    const ImVec4 accent = rgb(0, 112, 224);     // 選択 (UE の青)
+    const ImVec4 accentHover = rgb(30, 136, 245);
+    const ImVec4 text = rgb(214, 214, 214);
     ImVec4* c = s.Colors;
-    c[ImGuiCol_WindowBg] = ImVec4(0.13f, 0.14f, 0.15f, 1.0f);
-    c[ImGuiCol_ChildBg] = ImVec4(0.11f, 0.12f, 0.13f, 1.0f);
-    c[ImGuiCol_Header] = ImVec4(0.26f, 0.42f, 0.62f, 0.55f);
-    c[ImGuiCol_HeaderHovered] = ImVec4(0.30f, 0.50f, 0.75f, 0.80f);
-    c[ImGuiCol_TitleBgActive] = ImVec4(0.16f, 0.29f, 0.45f, 1.0f);
-    c[ImGuiCol_Tab] = ImVec4(0.17f, 0.20f, 0.24f, 1.0f);
-    c[ImGuiCol_TabSelected] = ImVec4(0.24f, 0.38f, 0.56f, 1.0f);
+    c[ImGuiCol_Text] = text;
+    c[ImGuiCol_TextDisabled] = rgb(128, 128, 128);
+    c[ImGuiCol_WindowBg] = bg;
+    c[ImGuiCol_ChildBg] = rgb(30, 30, 30);
+    c[ImGuiCol_PopupBg] = rgb(30, 30, 30, 0.98f);
+    c[ImGuiCol_Border] = border;
+    c[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_FrameBg] = bgDeep;
+    c[ImGuiCol_FrameBgHovered] = rgb(26, 26, 26);
+    c[ImGuiCol_FrameBgActive] = rgb(32, 32, 32);
+    c[ImGuiCol_TitleBg] = bgDark;
+    c[ImGuiCol_TitleBgActive] = bgDark;
+    c[ImGuiCol_TitleBgCollapsed] = bgDark;
+    c[ImGuiCol_MenuBarBg] = bgDark;
+    c[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_ScrollbarGrab] = rgb(70, 70, 70);
+    c[ImGuiCol_ScrollbarGrabHovered] = rgb(95, 95, 95);
+    c[ImGuiCol_ScrollbarGrabActive] = rgb(120, 120, 120);
+    c[ImGuiCol_CheckMark] = accentHover;
+    c[ImGuiCol_SliderGrab] = accent;
+    c[ImGuiCol_SliderGrabActive] = accentHover;
+    c[ImGuiCol_Button] = bgRaised;
+    c[ImGuiCol_ButtonHovered] = hover;
+    c[ImGuiCol_ButtonActive] = accent;
+    c[ImGuiCol_Header] = rgb(0, 112, 224, 0.45f);
+    c[ImGuiCol_HeaderHovered] = rgb(255, 255, 255, 0.07f);
+    c[ImGuiCol_HeaderActive] = rgb(0, 112, 224, 0.65f);
+    c[ImGuiCol_Separator] = border;
+    c[ImGuiCol_SeparatorHovered] = accent;
+    c[ImGuiCol_SeparatorActive] = accentHover;
+    c[ImGuiCol_ResizeGrip] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_ResizeGripHovered] = accent;
+    c[ImGuiCol_ResizeGripActive] = accentHover;
+    c[ImGuiCol_Tab] = bgDark;
+    c[ImGuiCol_TabHovered] = hover;
+    c[ImGuiCol_TabSelected] = bg;
+    c[ImGuiCol_TabSelectedOverline] = accent;
+    c[ImGuiCol_TabDimmed] = bgDark;
+    c[ImGuiCol_TabDimmedSelected] = bg;
+    c[ImGuiCol_TabDimmedSelectedOverline] = rgb(90, 90, 90);
+    c[ImGuiCol_DockingPreview] = rgb(0, 112, 224, 0.6f);
+    c[ImGuiCol_DockingEmptyBg] = bgDark;
+    c[ImGuiCol_TableHeaderBg] = bgRaised;
+    c[ImGuiCol_TableBorderStrong] = border;
+    c[ImGuiCol_TableBorderLight] = rgb(48, 48, 48);
+    c[ImGuiCol_TableRowBg] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_TableRowBgAlt] = rgb(255, 255, 255, 0.025f);
+    c[ImGuiCol_TextSelectedBg] = rgb(0, 112, 224, 0.45f);
+    c[ImGuiCol_NavCursor] = accent;
+    c[ImGuiCol_PlotHistogram] = accent;
+    c[ImGuiCol_PlotLines] = accentHover;
+    c[ImGuiCol_ModalWindowDimBg] = ImVec4(0, 0, 0, 0.55f);
     s.ScaleAllSizes(scale);
 }
 
@@ -291,7 +399,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         LocalFree(w);
     }
     // 引数: 開くファイル / デバッグ用オプション
-    std::string screenshotPath, selectName, openFile;
+    std::string screenshotPath, selectName;
+    std::vector<std::string> openFiles; // 複数指定するとすべて読み込む (1 つ目で開き、残りは追加)
     std::vector<std::string> focusWindows;
     int screenshotFrames = 90, renderMode = -1;
     bool playOnLoad = false, smoke = false, forceWarp = false, addRuler = false;
@@ -308,7 +417,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         else if (a == "--smoketest") smoke = true;
         else if (a == "--warp") forceWarp = true; // ソフトウェア描画を強制 (動作確認用)
         else if (a == "--ruler") { rulerHeight = (float)atof(next().c_str()); addRuler = true; }
-        else if (!a.empty() && a[0] != '-' && openFile.empty()) openFile = a;
+        else if (!a.empty() && a[0] != '-') openFiles.push_back(a);
     }
 
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, hInstance, LoadIconW(nullptr, IDI_APPLICATION),
@@ -355,7 +464,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     editor.PlayAnimationOnLoad(playOnLoad);
     if (smoke) editor.EnableSmokeTest();
     if (addRuler) editor.AddRulerAfterLoad(rulerHeight);
-    if (!openFile.empty()) editor.OpenFile(openFile);
+    for (size_t i = 0; i < openFiles.size(); ++i) editor.OpenFile(openFiles[i], i > 0);
 
     int frameCount = 0;
     bool running = true;

@@ -60,19 +60,40 @@ std::string OpenFile(const char* filter, const char* title) {
     return {};
 }
 
-std::string SaveFile(const char* filter, const std::string& defaultName, const char* defExt, const char* title) {
+std::string SaveFile(const char* filter, const std::string& defaultName, const char* defExt, const char* title, const std::string& initialDir) {
     wchar_t buf[MAX_PATH * 4] = {};
     std::wstring wn = Widen(defaultName);
     wcsncpy(buf, wn.c_str(), MAX_PATH * 4 - 1);
     std::wstring wf = WidenFilter(filter);
     std::wstring we = defExt ? Widen(defExt[0] == '.' ? defExt + 1 : defExt) : L"";
     std::wstring wt = title ? Widen(title) : L"";
+    std::wstring wd = Widen(initialDir);
+    for (auto& c : wd) if (c == L'/') c = L'\\';
+    // 拡張子が一致するフィルタの番号 (1 始まり)。"説明\0パターン\0" の組を順に見る
+    DWORD filterIndex = 0;
+    if (filter && defExt) {
+        std::string want = std::string("*.") + (defExt[0] == '.' ? defExt + 1 : defExt);
+        DWORD idx = 1;
+        for (const char* p = filter; *p; ++idx) {
+            const char* pattern = p + strlen(p) + 1;
+            if (!*pattern) break;
+            std::string pat(pattern);
+            for (size_t s = 0, e; s <= pat.size(); s = e + 1) {
+                e = pat.find(';', s);
+                if (e == std::string::npos) e = pat.size();
+                if (_stricmp(pat.substr(s, e - s).c_str(), want.c_str()) == 0 && !filterIndex) filterIndex = idx;
+            }
+            p = pattern + strlen(pattern) + 1;
+        }
+    }
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = g_owner;
     ofn.lpstrFilter = wf.empty() ? nullptr : wf.c_str();
+    ofn.nFilterIndex = filterIndex;
     ofn.lpstrFile = buf;
     ofn.nMaxFile = (DWORD)(sizeof(buf) / sizeof(buf[0]));
+    ofn.lpstrInitialDir = wd.empty() ? nullptr : wd.c_str();
     ofn.lpstrDefExt = defExt ? we.c_str() : nullptr;
     ofn.lpstrTitle = title ? wt.c_str() : nullptr;
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
@@ -120,7 +141,7 @@ void OpenInExplorer(const std::string& path) {
 namespace Dialogs {
 void SetOwner(void*) {}
 std::string OpenFile(const char*, const char*) { return {}; }
-std::string SaveFile(const char*, const std::string&, const char*, const char*) { return {}; }
+std::string SaveFile(const char*, const std::string&, const char*, const char*, const std::string&) { return {}; }
 std::string PickFolder(const char*) { return {}; }
 bool Confirm(const char*, const char*) { return true; }
 void OpenInExplorer(const std::string&) {}

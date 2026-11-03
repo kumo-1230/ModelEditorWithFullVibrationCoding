@@ -1,10 +1,12 @@
 #include "Exporter.h"
 #include "core/Log.h"
+#include "core/ModelOps.h"
 #include "core/SceneOps.h"
 #include "util/FileUtil.h"
 #include <chrono>
 #include <algorithm>
 #include <functional>
+#include <cctype>
 
 const char* ExportFormatName(ExportFormat f) {
     switch (f) {
@@ -59,6 +61,8 @@ ExportFormat ExportFormatFromPath(const std::string& path, ExportFormat fallback
 }
 
 void PrepareSceneForExport(Scene& scene, const ExportOptions& opts) {
+    if (opts.content == 1) Ops::StripAnimations(scene);
+    if (opts.content == 2) Ops::StripToAnimationOnly(scene);
     if (opts.onlyVisible) {
         std::function<void(int, bool)> rec = [&](int i, bool parentHidden) {
             bool hidden = parentHidden || !scene.nodes[i].visible;
@@ -150,10 +154,82 @@ void PrepareSceneForExport(Scene& scene, const ExportOptions& opts) {
     }
 }
 
+namespace {
+bool IsUpper(char c) { return c >= 'A' && c <= 'Z'; }
+bool IsLower(char c) { return c >= 'a' && c <= 'z'; }
+// 英数字と UTF-8 のマルチバイト文字 (日本語など) は単語の一部
+bool IsWordChar(char c) { return IsUpper(c) || IsLower(c) || (c >= '0' && c <= '9') || (unsigned char)c >= 0x80; }
+// 0=小文字 1=先頭が大文字 2=全部大文字 -1=英字なし
+int LetterCase(const std::string& s) {
+    bool up = false, lo = false;
+    char first = 0;
+    for (char c : s) {
+        if (IsUpper(c)) up = true;
+        if (IsLower(c)) lo = true;
+        if (!first && (IsUpper(c) || IsLower(c))) first = c;
+    }
+    if (!up && !lo) return -1;
+    if (up && !lo) return 2;
+    return IsUpper(first) ? 1 : 0;
+}
+const char* TextureWord(int letterCase) { return letterCase == 2 ? "TEXTURE" : letterCase == 1 ? "Texture" : "texture"; }
+} // namespace
+
+std::string TextureFolderName(const std::string& modelName) {
+    std::string name = modelName;
+    while (!name.empty() && (name.back() == ' ' || name.back() == '_' || name.back() == '-' || name.back() == '.')) name.pop_back();
+    while (!name.empty() && (name.front() == ' ' || name.front() == '_' || name.front() == '-' || name.front() == '.')) name.erase(name.begin());
+    if (name.empty()) return "modelTexture";
+    bool underscore = false, dash = false, other = false;
+    for (char c : name) {
+        if (c == '_') underscore = true;
+        else if (c == '-') dash = true;
+        else if (!IsWordChar(c)) other = true;
+    }
+    std::string out;
+    if (!other && underscore != dash) {
+        // 区切り文字の命名 (snake_case / SCREAMING_CASE / SK_Hero / kebab-case): 同じ区切りと、最後の単語と同じ大文字小文字で付ける
+        char sep = underscore ? '_' : '-';
+        int c = LetterCase(name) == 2 ? 2 : LetterCase(name.substr(name.find_last_of(sep) + 1));
+        if (c < 0) c = LetterCase(name); // 最後が数字だけ (Hero_01) なら全体に合わせる
+        out = name + sep + TextureWord(c < 0 ? 0 : c);
+    } else if (!other && !underscore && !dash &&
+               (LetterCase(name) == -1 || (std::any_of(name.begin(), name.end(), IsUpper) && std::any_of(name.begin(), name.end(), IsLower)))) {
+        // PascalCase / camelCase / 英字なし (数字や日本語): そのまま Texture を付ける
+        out = name + "Texture";
+    } else {
+        // それ以外 (空白入り、小文字だけ、大文字だけ、区切りの混在) はキャメルケースに統一する
+        std::vector<std::string> words;
+        std::string w;
+        for (char c : name) {
+            if (IsWordChar(c)) w += c;
+            else if (!w.empty()) { words.push_back(w); w.clear(); }
+        }
+        if (!w.empty()) words.push_back(w);
+        for (size_t i = 0; i < words.size(); ++i) {
+            std::string s = words[i];
+            if (LetterCase(s) == 2) for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+            if (i == 0 && IsUpper(s[0])) s[0] = (char)std::tolower((unsigned char)s[0]);
+            if (i > 0 && IsLower(s[0])) s[0] = (char)std::toupper((unsigned char)s[0]);
+            out += s;
+        }
+        if (out.empty()) out = "model";
+        out += "Texture";
+    }
+    return FileUtil::SanitizeFilename(out);
+}
+
+std::string ResolveTextureSubdir(const std::string& exportPath, const ExportOptions& opts) {
+    if (opts.textureFolderMode == 0) return TextureFolderName(FileUtil::Stem(exportPath));
+    return opts.textureSubdir;
+}
+
 bool ExportScene(const Scene& src, const std::string& path, const ExportOptions& optsIn, std::string& err) {
     auto t0 = std::chrono::steady_clock::now();
     ExportOptions opts = optsIn;
     opts.format = ExportFormatFromPath(path, opts.format);
+    opts.textureSubdir = ResolveTextureSubdir(path, opts);
+    opts.textureFolderMode = 1;
     Scene scene = src;
     PrepareSceneForExport(scene, opts);
     LOG_INFO("書き出し開始: %s [%s]", path.c_str(), ExportFormatName(opts.format));

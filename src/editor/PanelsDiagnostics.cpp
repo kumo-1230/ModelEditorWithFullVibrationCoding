@@ -157,7 +157,8 @@ bool Editor::InspectVertexAt(const ImVec2& mouse, const ImVec2& size) {
 // モデル診断パネル
 // ---------------------------------------------------------------------------
 void Editor::DrawDiagnostics() {
-    if (!ImGui::Begin("モデル診断###Diagnostics", &m_panels.diagnostics)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_DIAG, "モデル診断", "Diagnostics").c_str(), &m_panels.diagnostics)) { ImGui::End(); return; }
+    PanelHint("穴・裏返った面・ウェイト・アニメーションの不具合を詳しく調べます。ビューポートで色分けして確認できます");
     if (m_scene.Empty()) {
         ImGui::TextDisabled("モデルを読み込むと、穴・裏返り・ウェイト・アニメーションなどの問題を調べられます");
         ImGui::End();

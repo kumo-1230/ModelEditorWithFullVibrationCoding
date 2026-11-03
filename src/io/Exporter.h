@@ -24,6 +24,7 @@ ExportFormat ExportFormatFromPath(const std::string& path, ExportFormat fallback
 
 struct ExportOptions {
     ExportFormat format = ExportFormat::GLB;
+    int content = 0;               // 書き出す内容: 0=全部 1=モデルだけ (アニメーションなし) 2=アニメーションだけ (骨格 + アニメーション)
     bool exportAnimations = true;
     bool exportSkins = true;
     bool exportMorphTargets = true;
@@ -37,7 +38,9 @@ struct ExportOptions {
     bool embedTexturesFBX = false; // FBX にテクスチャを埋め込む
     bool fbxUnitCentimeters = false; // FBX を cm 単位で出力 (Maya 既定)。false ならメートル (UnitScaleFactor=100)
     bool copyTextures = true;      // 外部参照形式でテクスチャファイルを出力先にコピー
-    std::string textureSubdir = ""; // テクスチャを出力するサブフォルダ (例: "textures")
+    // テクスチャを出力するフォルダ: 0=モデル名 + Texture (命名はモデル名の書き方に合わせる) 1=textureSubdir を使う
+    int textureFolderMode = 0;
+    std::string textureSubdir = ""; // textureFolderMode=1 のときのサブフォルダ (空なら出力先と同じ場所)
     int objectScaleMode = 0;       // オブジェクトノードのスケール: 0=中身に焼き込む 1=スケール付きの親ノードとして残す
     bool dissolveObjectWrappers = true; // 焼き込み時、自動作成した親ノードを書き出さない
     float scale = 1.0f;            // 書き出し時の追加スケール
@@ -45,6 +48,13 @@ struct ExportOptions {
     bool prettyPrintJson = true;
     bool verifyAfterExport = true; // 書き出し後に再読み込みして検証
 };
+
+// モデル名 + "texture" のフォルダ名。モデル名の命名規則に合わせる:
+// my_model → my_model_texture / MY_MODEL → MY_MODEL_TEXTURE / SK_Hero → SK_Hero_Texture / my-model → my-model-texture /
+// MyModel → MyModelTexture / myModel → myModelTexture / それ以外 (空白入り・小文字だけ等) はキャメルケース: "my model" → myModelTexture
+std::string TextureFolderName(const std::string& modelName);
+// 書き出し先のパスと設定から、テクスチャを置くサブフォルダを決める (空なら出力先と同じ場所)
+std::string ResolveTextureSubdir(const std::string& exportPath, const ExportOptions& opts);
 
 // 書き出し前の前処理 (コピーしたシーンに対して実行)
 void PrepareSceneForExport(Scene& scene, const ExportOptions& opts);

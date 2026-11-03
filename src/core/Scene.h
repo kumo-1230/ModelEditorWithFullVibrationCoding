@@ -143,6 +143,8 @@ struct Node {
     bool visible = true;
     bool objectRoot = false;    // オブジェクト (エンジンの GameObject 相当)。サイズ変更はこのノードのスケールで行う
     bool objectWrapper = false; // エディターが自動で作った親ノード (焼き込み書き出し時に取り除ける)
+    // 読み込んだファイルごとのグループ (= 1 モデル) に付ける元ファイルの情報 (単位・パスなど)。それ以外のノードは空
+    std::shared_ptr<struct SceneInfo> modelInfo;
 
     glm::mat4 LocalMatrix() const;
     void SetLocalMatrix(const glm::mat4& m);

@@ -1,5 +1,6 @@
 #pragma once
 #include "core/Diagnostics.h"
+#include "core/ModelOps.h"
 #include "core/Scene.h"
 #include "core/Undo.h"
 #include "core/Validate.h"
@@ -7,6 +8,7 @@
 #include "io/Importer.h"
 #include "render/Camera.h"
 #include "render/Renderer.h"
+#include "Icons.h"
 #include <imgui.h>
 #include <deque>
 #include <functional>
@@ -31,7 +33,7 @@ public:
     void OnDropFiles(const std::vector<std::string>& paths);
     bool WantsQuit() const { return m_quitRequested; }
     void RequestQuit();
-    void OpenFile(const std::string& path);
+    void OpenFile(const std::string& path, bool add = false); // add=true: 今のシーンに追加 (Maya の読み込み)
     void SetSelectAfterLoad(const std::string& nodeName) { m_selectAfterLoad = nodeName; }
     void FocusWindowLater(const std::string& windowName) { m_focusWindows.push_back(windowName); }
     void PlayAnimationOnLoad(bool play) { m_playOnLoad = play; }
@@ -105,7 +107,7 @@ private:
     std::future<ImportResult> m_importFuture;
     bool m_importing = false;
     std::string m_importingPath;
-    int m_importMode = 0; // 0=置き換え 1=追加 2=アニメーションのみ
+    int m_importMode = 1; // 0=置き換え 1=追加 (既定、Maya の読み込みと同じ) 2=アニメーションのみ
     int m_importModeRunning = 0;
     std::deque<std::pair<std::string, int>> m_importQueue; // 複数ファイルを順番に読み込む
     int m_dropMode = 3;            // ドロップ時: 0=置き換え 1=追加 2=アニメのみ 3=自動 (空なら置き換え、あれば追加)
@@ -132,6 +134,43 @@ private:
     // create=false で親ノードの作成が必要なら -1
     int ScaleTargetOf(int node, bool create);
 
+    // 複数モデル (Maya の読み込みと同じく、ファイルごとに最上位のグループ = 1 モデル)
+    int ModelOf(int node) const;      // ノードが属するモデル (最上位のノード)
+    int ActiveModel() const;          // 選んでいるモデル。モデルが 1 つならそれ。決められなければ -1
+    const SceneInfo& ModelInfo(int model) const; // モデルごとの元ファイルの情報 (単位・パス)
+    SceneInfo& ModelInfoMut(int model);
+    std::string FitTargetLabel(bool allSelected);
+    struct ModelMembership {
+        uint64_t rev = 0;
+        int model = -2;
+        std::vector<char> nodes, meshes, materials, textures, animations;
+    };
+    ModelMembership m_member;
+    const ModelMembership& Membership(); // 選んでいるモデルに属するもの (一覧の絞り込み用。モデルが決まらなければ全部 1)
+    bool NodeInActiveModel(int node);
+    bool IssueInActiveModel(const Issue& is); // 検証結果が選んでいるモデルのものか
+    void RevealIssue(const Issue& is);        // 検証の行をダブルクリック: 関連するパネルと確認用の表示を開く
+    void DrawAnimEditor();                    // アニメーション編集 (Maya のタイムライン / ドープシート相当)
+    // アニメーション編集の状態
+    float m_rangeIn = 0.0f, m_rangeOut = 0.0f; // 範囲 (秒)
+    int m_rangeAnim = -1;
+    std::vector<int> m_dopeSel;               // ドープシートで選んだノード (チャンネルの行)
+    float m_dopeZoom = 1.0f;
+    float m_reduceTol = 0.001f;
+    std::string m_dopeFilter;
+    static bool InMask(const std::vector<char>& m, int i) { return i < 0 || i >= (int)m.size() || m[i]; }
+    bool m_filterToModel = true;      // パネルの一覧を選んでいるモデルのものだけにする
+    int m_boundsModel = -2;
+    void DrawModelFilterBar();
+    void DrawModels();
+    void ExtractFromActiveModel(bool animationOnly);
+    int m_combineSrc = -1, m_combineDst = -1, m_attachNode = -1;
+    std::string m_attachFilter, m_combineReport;
+    bool m_combineCloseSrc = true;
+    bool m_extractRemove = false;
+    Ops::RetargetOptions m_retarget;
+    int m_exportScope = 0;            // 0=選んでいるモデルだけ (モデルが複数のとき) 1=シーン全体
+
     // 定規 / サイズ合わせ (トランスフォームのスケールで変更)
     bool m_fitAlignBottom = true;
     bool m_fitAlignXZ = false;
@@ -141,7 +180,7 @@ private:
     bool ScaleTargetsToSize(std::vector<int> targets, int axis, float targetSize, const glm::vec3* anchor, bool anchorTop, bool alignXZ, const char* label,
                             float factor = 0.0f);
     float m_scaleFactor = 2.0f;     // 倍率で拡大縮小
-    std::vector<int> FitTargetsForSelection();
+    std::vector<int> FitTargetsForSelection(bool allSelected = true); // false: 複数選択でも主選択だけ
     // 表示中の姿勢 (アニメーション適用後) のワールド行列
     std::vector<glm::mat4> PosedWorld() const;
 
@@ -185,7 +224,29 @@ private:
         bool settings = false, help = false, imguiDemo = false, imguiMetrics = false, dump = false;
         bool measure = true;
         bool diagnostics = true;
+        bool models = true;
+        bool animEditor = true;
     } m_panels;
+public:
+    // 表示プリセット (表示の設定 + 開くパネル + 確認用の線)
+    struct ViewPreset {
+        std::string name, description;
+        bool builtin = false;
+        RenderSettings rs;
+        Panels panels;
+        bool boneNames = false, sizeOverlay = true, openEdges = false, nonManifold = false, rootPath = false, pivots = false, gizmoHelp = true;
+        std::vector<std::string> focus; // 前に出すパネル (### の後ろの ID)
+    };
+private:
+    ViewPreset CaptureViewPreset(const std::string& name) const;
+    void ApplyViewPreset(const ViewPreset& p);
+    static const std::vector<ViewPreset>& BuiltinPresets();
+    void LoadUserPresets();
+    void SaveUserPresets();
+    void DrawPresetMenu();
+    std::vector<ViewPreset> m_userPresets;
+    std::string m_activePreset = "標準 (既定に戻す)";
+    std::string m_presetName;
     bool m_resetLayout = false;
     bool m_firstFrame = true;
 
@@ -266,6 +327,13 @@ private:
     // ---- 内部処理 ---------------------------------------------------------
     void SetupDockLayout(unsigned dockId);
     void DrawMainMenu();
+    void DrawMainToolbar();          // メニューの下: ファイル / 元に戻す / 編集ツール / 再生 / 表示
+    void DrawStatusBar();            // 一番下: ファイル / 選択 / 規模 / 問題の数
+    void DrawWelcome(const ImVec2& pos, const ImVec2& size); // 何も開いていないときの案内
+    void PanelHint(const char* text); // パネルの説明 (何を表していて何ができるか)
+    static std::string PanelTitle(const char* icon, const char* title, const char* id);
+    bool m_showPanelHints = true;
+    int m_layoutVersion = 0;         // 配置を変えたら上げる (古い配置の ini を一度だけ作り直す)
     void DrawToolbar();
     void HandleShortcuts();
     void UpdateAnimation(float dt);

@@ -15,7 +15,14 @@ static const char* kImageFilter = "Images (*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.psd;
 // メッシュ
 // ---------------------------------------------------------------------------
 void Editor::DrawMeshes() {
-    if (!ImGui::Begin("メッシュ###Meshes", &m_panels.meshes)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_MESH, "メッシュ", "Meshes").c_str(), &m_panels.meshes)) { ImGui::End(); return; }
+    PanelHint("形状データ (頂点と三角形) の一覧です。法線の再計算、頂点の結合、UV の確認などができます");
+    DrawModelFilterBar();
+    std::vector<int> rows;
+    {
+        const auto& M = Membership();
+        for (int i = 0; i < (int)m_scene.meshes.size(); ++i) if (InMask(M.meshes, i)) rows.push_back(i);
+    }
     float listH = std::min(220.0f, ImGui::GetContentRegionAvail().y * 0.4f);
     if (ImGui::BeginTable("meshlist", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable, ImVec2(0, listH))) {
         ImGui::TableSetupScrollFreeze(0, 1);
@@ -25,9 +32,10 @@ void Editor::DrawMeshes() {
         ImGui::TableSetupColumn("使用", ImGuiTableColumnFlags_WidthFixed, 36);
         ImGui::TableHeadersRow();
         ImGuiListClipper clip;
-        clip.Begin((int)m_scene.meshes.size());
+        clip.Begin((int)rows.size());
         while (clip.Step())
-            for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i) {
+            for (int row = clip.DisplayStart; row < clip.DisplayEnd; ++row) {
+                const int i = rows[row];
                 const Mesh& m = m_scene.meshes[i];
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
@@ -170,7 +178,9 @@ void Editor::DrawPrimitiveTools(int meshIdx, int primIdx) {
 // マテリアル
 // ---------------------------------------------------------------------------
 void Editor::DrawMaterials() {
-    if (!ImGui::Begin("マテリアル###Materials", &m_panels.materials)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_MATERIAL, "マテリアル", "Materials").c_str(), &m_panels.materials)) { ImGui::End(); return; }
+    PanelHint("表面の色と質感の設定です。テクスチャパネルの画像をスロットへドラッグすると割り当てられます");
+    DrawModelFilterBar();
     if (ImGui::Button("新規")) {
         Checkpoint("マテリアル作成");
         m_selMaterial = Ops::AddMaterial(m_scene, "Material_" + std::to_string(m_scene.materials.size()));
@@ -208,7 +218,9 @@ void Editor::DrawMaterials() {
 
     float listH = std::min(180.0f, ImGui::GetContentRegionAvail().y * 0.35f);
     ImGui::BeginChild("matlist", ImVec2(0, listH), ImGuiChildFlags_Borders);
+    const auto matMask = Membership().materials;
     for (int i = 0; i < (int)m_scene.materials.size(); ++i) {
+        if (!InMask(matMask, i)) continue;
         const Material& m = m_scene.materials[i];
         ImGui::PushID(i);
         ImVec4 c(m.baseColor.r, m.baseColor.g, m.baseColor.b, 1);
@@ -333,7 +345,9 @@ void Editor::DrawMaterialEditor(int idx) {
 // テクスチャ
 // ---------------------------------------------------------------------------
 void Editor::DrawTextures() {
-    if (!ImGui::Begin("テクスチャ###Textures", &m_panels.textures)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_TEXTURE, "テクスチャ", "Textures").c_str(), &m_panels.textures)) { ImGui::End(); return; }
+    PanelHint("モデルが使う画像の一覧です。見つからない画像は、フォルダを指定して探し直せます");
+    DrawModelFilterBar();
     if (ImGui::Button("読み込み...")) {
         std::string p = Dialogs::OpenFile(kImageFilter, "テクスチャを読み込む");
         if (!p.empty()) LoadTextureFile(p);
@@ -373,10 +387,13 @@ void Editor::DrawTextures() {
     ImGui::BeginChild("texgrid", ImVec2(0, listH), ImGuiChildFlags_Borders);
     float cell = 72.0f;
     int cols = std::max(1, (int)(ImGui::GetContentRegionAvail().x / (cell + 8)));
+    const auto texMask = Membership().textures;
+    int shown = 0;
     for (int i = 0; i < (int)m_scene.textures.size(); ++i) {
+        if (!InMask(texMask, i)) continue;
         const Texture& t = m_scene.textures[i];
         ImGui::PushID(i);
-        if (i % cols) ImGui::SameLine();
+        if (shown++ % cols) ImGui::SameLine();
         ImGui::BeginGroup();
         ImTextureID id = TexId(i);
         bool sel = m_selTexture == i;
@@ -510,7 +527,7 @@ void Editor::DrawTextures() {
 // ---------------------------------------------------------------------------
 void Editor::DrawUVViewer() {
     ImGui::SetNextWindowSize(ImVec2(520, 560), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("UV ビューア###UVViewer", &m_panels.uvViewer)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_GRID, "UV ビューア", "UVViewer").c_str(), &m_panels.uvViewer)) { ImGui::End(); return; }
     if (m_selMesh < 0 || m_selMesh >= (int)m_scene.meshes.size()) {
         ImGui::TextDisabled("メッシュを選択してください");
         ImGui::End();

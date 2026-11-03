@@ -46,7 +46,8 @@ void Editor::DrawBoneTree(int node, const std::vector<bool>& joints, const Skin&
 }
 
 void Editor::DrawSkeleton() {
-    if (!ImGui::Begin("スケルトン###Skeleton", &m_panels.skeleton)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_SKELETON, "スケルトン", "Skeleton").c_str(), &m_panels.skeleton)) { ImGui::End(); return; }
+    PanelHint("ボーン (骨格) とスキンの一覧です。ボーンを選ぶとビューポートで強調表示されます");
     if (m_scene.skins.empty()) {
         ImGui::TextDisabled("スキン (ボーン) はありません");
         auto joints = m_scene.JointMask();
@@ -159,7 +160,9 @@ void Editor::DrawSkeleton() {
 // アニメーション
 // ---------------------------------------------------------------------------
 void Editor::DrawAnimation() {
-    if (!ImGui::Begin("アニメーション###Animation", &m_panels.animation)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_ANIMATION, "アニメーション", "Animation").c_str(), &m_panels.animation)) { ImGui::End(); return; }
+    PanelHint("モーションの一覧と再生です。書き出しに反映される速度の変更もここで行います");
+    DrawModelFilterBar();
     if (m_scene.animations.empty()) {
         ImGui::TextDisabled("アニメーションはありません");
         ImGui::TextDisabled("ファイル > アニメーションのみ取り込み で別ファイルのモーションを追加できます");
@@ -169,7 +172,9 @@ void Editor::DrawAnimation() {
     // 左: クリップ一覧, 右: 再生コントロール
     ImGui::BeginChild("clips", ImVec2(220, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX);
     if (ImGui::Selectable("(レストポーズ)", m_anim < 0)) { m_anim = -1; m_playing = false; }
+    const auto animMask = Membership().animations;
     for (int i = 0; i < (int)m_scene.animations.size(); ++i) {
+        if (!InMask(animMask, i)) continue;
         ImGui::PushID(i);
         char l[256];
         snprintf(l, sizeof(l), "%s  (%.2fs)", m_scene.animations[i].name.c_str(), m_scene.animations[i].duration);

@@ -18,7 +18,8 @@ static bool ContainsI(const std::string& s, const std::string& sub) {
 // 階層
 // ---------------------------------------------------------------------------
 void Editor::DrawHierarchy() {
-    if (!ImGui::Begin("階層###Hierarchy", &m_panels.hierarchy)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_HIERARCHY, "階層", "Hierarchy").c_str(), &m_panels.hierarchy)) { ImGui::End(); return; }
+    PanelHint("モデルの部品 (ノード) の親子関係です。クリックで選択、ドラッグ&ドロップで親子付け、右クリックで操作メニューが開きます");
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##filter", "名前で検索...", &m_hierarchyFilter);
     ImGui::TextDisabled("ノード %zu  選択 %zu", m_scene.nodes.size(), m_selection.size());
@@ -106,7 +107,7 @@ void Editor::DrawHierarchyNode(int idx, const std::vector<bool>& joints, const s
     ImVec4 col = ImGui::GetStyleColorVec4(ImGuiCol_Text);
     if (joints[idx]) { icon = "◆"; col = ImVec4(0.45f, 0.8f, 1.0f, 1); }
     if (n.mesh >= 0) { icon = n.skin >= 0 ? "★" : "■"; col = n.skin >= 0 ? ImVec4(1.0f, 0.75f, 0.45f, 1) : ImVec4(0.75f, 1.0f, 0.6f, 1); }
-    else if (n.objectRoot) { icon = "▣"; col = ImVec4(0.85f, 0.75f, 1.0f, 1); }
+    else if (n.objectRoot) { icon = IconOr(ICON_LAYERS, "□"); col = ImVec4(0.85f, 0.75f, 1.0f, 1); } // モデル (ファイルのグループ) / オブジェクト
     if (!n.visible) col.w = 0.45f;
 
     bool open;
@@ -483,9 +484,10 @@ void Editor::DrawTransformEditor(int idx) {
 }
 
 void Editor::DrawInspector() {
-    if (!ImGui::Begin("インスペクター###Inspector", &m_panels.inspector)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_INSPECTOR, "インスペクター", "Inspector").c_str(), &m_panels.inspector)) { ImGui::End(); return; }
+    PanelHint("選んだノードの位置・回転・スケールと、付いているメッシュやスキンの詳細を表示・編集します");
     if (m_primary < 0 || m_primary >= (int)m_scene.nodes.size()) {
-        ImGui::TextDisabled("ノードを選択してください");
+        ImGui::TextDisabled("何も選択されていません。\n階層かビューポートでクリックすると、\nここに詳細が表示されます");
         ImGui::End();
         return;
     }
@@ -493,7 +495,7 @@ void Editor::DrawInspector() {
     Node& n = m_scene.nodes[idx];
 
     if (m_selection.size() > 1) {
-        ImGui::TextColored(ImVec4(1, 0.8f, 0.4f, 1), "%zu 個のノードを選択中 (表示はプライマリ)", m_selection.size());
+        ImGui::TextColored(ImVec4(1, 0.8f, 0.4f, 1), "%zu 個のノードを選択中: トランスフォームと倍率をまとめて変更できます", m_selection.size());
         if (ImGui::Button("選択をすべてフリーズ")) for (int s : std::vector<int>(m_selection)) ApplyFreeze(s, false);
         ImGui::SameLine();
         if (ImGui::Button("すべて非表示")) { Checkpoint("非表示"); for (int s : m_selection) m_scene.nodes[s].visible = false; MarkChanged(); }
@@ -519,9 +521,31 @@ void Editor::DrawInspector() {
     ImGui::SameLine();
     ImGui::TextDisabled("親: %s", n.parent >= 0 ? m_scene.nodes[n.parent].name.c_str() : "(ルート)");
 
-    if (ImGui::CollapsingHeader("トランスフォーム", ImGuiTreeNodeFlags_DefaultOpen)) DrawTransformEditor(idx);
+    if (SectionHeader(ICON_MOVE, "トランスフォーム (位置・回転・スケール)", ImGuiTreeNodeFlags_DefaultOpen)) DrawTransformEditor(idx);
 
-    if (ImGui::CollapsingHeader("メッシュ", ImGuiTreeNodeFlags_DefaultOpen)) {
+    // 複数選択中は、全部にそろえて変えられるもの (トランスフォームと倍率) だけを出す
+    if (m_selection.size() > 1) {
+        if (SectionHeader(ICON_SCALE, "倍率で拡大縮小 (選択したすべて)", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::SetNextItemWidth(120);
+            ImGui::InputFloat("倍##multiFactor", &m_scaleFactor, 0, 0, "%.6g");
+            m_scaleFactor = std::max(m_scaleFactor, 1e-6f);
+            ImGui::SameLine();
+            if (ImGui::Button("この倍率にする##multi")) ScaleTargetsToSize(FitTargetsForSelection(), 1, 0.0f, nullptr, false, false, "倍率で拡大縮小", m_scaleFactor);
+            for (float q : { 0.5f, 2.0f, 10.0f, 100.0f, 0.01f }) {
+                char lbl[32];
+                snprintf(lbl, sizeof(lbl), "x%g##multi", q);
+                if (q != 0.5f) ImGui::SameLine();
+                if (ImGui::SmallButton(lbl)) ScaleTargetsToSize(FitTargetsForSelection(), 1, 0.0f, nullptr, false, false, "倍率で拡大縮小", q);
+            }
+            ImGui::TextDisabled("それぞれの原点を中心に拡大します");
+        }
+        ImGui::Spacing();
+        ImGui::TextDisabled("メッシュ・スキン・アニメーションなどの詳細は、\n1 つだけ選んだときに表示します");
+        ImGui::End();
+        return;
+    }
+
+    if (SectionHeader(ICON_MESH, "メッシュ (形状)", ImGuiTreeNodeFlags_DefaultOpen)) {
         Node& nd = m_scene.nodes[idx];
         const char* cur = nd.mesh >= 0 && nd.mesh < (int)m_scene.meshes.size() ? m_scene.meshes[nd.mesh].name.c_str() : "(なし)";
         if (ImGui::BeginCombo("メッシュ", cur)) {
@@ -580,7 +604,7 @@ void Editor::DrawInspector() {
         }
     }
 
-    if (ImGui::CollapsingHeader("スキン")) {
+    if (SectionHeader(ICON_SKELETON, "スキン (ボーンによる変形)")) {
         Node& nd = m_scene.nodes[idx];
         const char* cur = nd.skin >= 0 && nd.skin < (int)m_scene.skins.size() ? m_scene.skins[nd.skin].name.c_str() : "(なし)";
         if (ImGui::BeginCombo("スキン", cur)) {
@@ -601,7 +625,7 @@ void Editor::DrawInspector() {
         }
     }
 
-    if (ImGui::CollapsingHeader("アニメーション")) {
+    if (SectionHeader(ICON_ANIMATION, "アニメーション")) {
         int count = 0;
         for (size_t a = 0; a < m_scene.animations.size(); ++a)
             for (auto& c : m_scene.animations[a].channels)

@@ -2,6 +2,7 @@
 #include "Exporter.h"
 #include "ImageIO.h"
 #include "core/Log.h"
+#include "core/ModelOps.h"
 #include "core/SceneOps.h"
 #include "util/FileUtil.h"
 
@@ -605,7 +606,16 @@ bool ExportWithAssimp(const Scene& sceneIn, const std::string& path, const Expor
     if (!id) { err = "Assimp では未対応の形式です"; return false; }
 
     Scene scene = sceneIn;
-    if (opts.format == ExportFormat::ThreeMF) FlattenToWorld(scene);
+    // ボーンを持てない形式は、画面に表示しているレストポーズの形で頂点に焼き込む
+    // (焼き込まないと、レストポーズとバインドポーズが違うモデルでは別の姿勢で書き出される)
+    const bool staticFormat = opts.format == ExportFormat::OBJ || opts.format == ExportFormat::STL || opts.format == ExportFormat::PLY ||
+                              opts.format == ExportFormat::ThreeMF || opts.format == ExportFormat::ThreeDS || opts.format == ExportFormat::X;
+    if (staticFormat) {
+        int n = Ops::BakeSkinsToRestPose(scene);
+        if (n) LOG_INFO("ボーンを持てない形式のため、スキンメッシュ %d 個を表示中のレストポーズで固定しました", n);
+    }
+    // 3MF / 3DS はノードの変換 (回転・拡大) を正しく持てないので、メッシュをワールド座標に焼き込む
+    if (opts.format == ExportFormat::ThreeMF || opts.format == ExportFormat::ThreeDS) FlattenToWorld(scene);
     ConvertSkinsForAssimp(scene);
 
     std::unique_ptr<aiScene> ai(new aiScene());

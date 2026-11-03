@@ -14,7 +14,8 @@
 // コンソール
 // ---------------------------------------------------------------------------
 void Editor::DrawConsole() {
-    if (!ImGui::Begin("コンソール###Console", &m_panels.console)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_CONSOLE, "コンソール", "Console").c_str(), &m_panels.console)) { ImGui::End(); return; }
+    PanelHint("処理の記録 (ログ) です。読み込み・書き出しの結果や、エラーの詳しい理由が出ます");
     static const char* names[] = { "Debug", "Info", "Warning", "Error" };
     static const ImVec4 colors[] = { ImVec4(0.6f, 0.6f, 0.6f, 1), ImVec4(0.85f, 0.85f, 0.85f, 1), ImVec4(1.0f, 0.8f, 0.3f, 1), ImVec4(1.0f, 0.4f, 0.4f, 1) };
     for (int i = 0; i < 4; ++i) {
@@ -71,7 +72,9 @@ void Editor::DrawConsole() {
 // 検証
 // ---------------------------------------------------------------------------
 void Editor::DrawValidation() {
-    if (!ImGui::Begin("検証###Validation", &m_panels.validation)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_CHECK, "検証", "Validation").c_str(), &m_panels.validation)) { ImGui::End(); return; }
+    PanelHint("書き出す前に直しておきたい問題の一覧です。「修正」ボタンで自動修正できるものもあります");
+    DrawModelFilterBar();
     if (ImGui::Button("今すぐ検証")) { m_issues = ValidateScene(m_scene); m_issuesRevision = m_sceneRevision; }
     ImGui::SameLine();
     ImGui::Checkbox("自動", &m_autoValidate);
@@ -110,10 +113,11 @@ void Editor::DrawValidation() {
         ImGui::TableSetupColumn("内容", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("修正", ImGuiTableColumnFlags_WidthFixed, 60);
         ImGui::TableHeadersRow();
-        int toFix = -1;
+        int toFix = -1, revealIssue = -1;
         for (int i = 0; i < (int)m_issues.size(); ++i) {
             const Issue& is = m_issues[i];
             if (!showInfo && is.severity == Severity::Info) continue;
+            if (!IssueInActiveModel(is)) continue;
             ImGui::TableNextRow();
             ImGui::PushID(i);
             ImGui::TableNextColumn();
@@ -123,21 +127,27 @@ void Editor::DrawValidation() {
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(is.category.c_str());
             ImGui::TableNextColumn();
-            if (ImGui::Selectable(is.message.c_str(), false, ImGuiSelectableFlags_AllowOverlap)) {
-                if (is.node >= 0 && is.node < (int)m_scene.nodes.size()) { Select(is.node); FocusNode(is.node); }
-                if (is.mesh >= 0) {
-                    m_selMesh = is.mesh;
-                    auto users = m_scene.NodesUsingMesh(is.mesh);
-                    if (!users.empty()) Select(users[0]);
+            if (ImGui::Selectable(is.message.c_str(), false, ImGuiSelectableFlags_AllowOverlap | ImGuiSelectableFlags_AllowDoubleClick)) {
+                if (ImGui::IsMouseDoubleClicked(0)) {
+                    revealIssue = i; // 関連するパネル・表示を開く (ループの後で実行)
+                } else {
+                    if (is.node >= 0 && is.node < (int)m_scene.nodes.size()) { Select(is.node); FocusNode(is.node); }
+                    if (is.mesh >= 0) {
+                        m_selMesh = is.mesh;
+                        auto users = m_scene.NodesUsingMesh(is.mesh);
+                        if (!users.empty()) Select(users[0]);
+                    }
+                    if (is.material >= 0) m_selMaterial = is.material;
+                    if (is.texture >= 0) m_selTexture = is.texture;
                 }
-                if (is.material >= 0) m_selMaterial = is.material;
-                if (is.texture >= 0) m_selTexture = is.texture;
             }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) ImGui::SetTooltip("クリック: 対象を選ぶ\nダブルクリック: 関連するパネルと確認用の表示を開く");
             ImGui::TableNextColumn();
             if (is.fix != FixAction::None && ImGui::SmallButton("修正")) toFix = i;
             ImGui::PopID();
         }
         ImGui::EndTable();
+        if (revealIssue >= 0 && revealIssue < (int)m_issues.size()) RevealIssue(Issue(m_issues[revealIssue]));
         if (toFix >= 0) {
             Checkpoint("修正: " + m_issues[toFix].message);
             if (ApplyFix(m_scene, m_issues[toFix])) LOG_INFO("修正しました: %s", m_issues[toFix].message.c_str());
@@ -154,7 +164,8 @@ void Editor::DrawValidation() {
 // 統計 / デバッグ
 // ---------------------------------------------------------------------------
 void Editor::DrawStats() {
-    if (!ImGui::Begin("統計 / デバッグ###Stats", &m_panels.stats)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_STATS, "統計 / デバッグ", "Stats").c_str(), &m_panels.stats)) { ImGui::End(); return; }
+    PanelHint("描画の負荷・メモリ・フレーム時間の統計です");
     ImGuiIO& io = ImGui::GetIO();
     std::vector<float> ft(m_frameTimes.begin(), m_frameTimes.end());
     float maxFt = 0, avg = 0;
@@ -221,7 +232,8 @@ void Editor::DrawStats() {
 // シーン情報
 // ---------------------------------------------------------------------------
 void Editor::DrawSceneInfo() {
-    if (!ImGui::Begin("シーン情報###SceneInfo", &m_panels.sceneInfo)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_INFO, "シーン情報", "SceneInfo").c_str(), &m_panels.sceneInfo)) { ImGui::End(); return; }
+    PanelHint("読み込んだファイルの情報 (形式・単位・座標軸・数) です");
     ImGui::TextWrapped("ファイル: %s", m_scene.info.sourcePath.empty() ? "(なし)" : m_scene.info.sourcePath.c_str());
     ImGui::Text("形式: %s", m_scene.info.sourceFormat.c_str());
     static const char* ax[] = { "X", "Y", "Z" };
@@ -248,7 +260,8 @@ void Editor::DrawSceneInfo() {
 // 履歴
 // ---------------------------------------------------------------------------
 void Editor::DrawHistory() {
-    if (!ImGui::Begin("履歴###History", &m_panels.history)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_HISTORY, "履歴", "History").c_str(), &m_panels.history)) { ImGui::End(); return; }
+    PanelHint("これまでの操作の一覧です。行をクリックすると、その時点まで戻れます");
     ImGui::TextDisabled("クリックでその時点まで戻る / 進む");
     const auto& undo = m_undo.UndoEntries();
     const auto& redo = m_undo.RedoEntries();
@@ -278,7 +291,7 @@ void Editor::DrawHistory() {
 // ---------------------------------------------------------------------------
 void Editor::DrawImportWindow() {
     ImGui::SetNextWindowSize(ImVec2(460, 520), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("インポート設定###ImportSettings", &m_panels.importWin)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_IMPORT, "インポート設定", "ImportSettings").c_str(), &m_panels.importWin)) { ImGui::End(); return; }
     ImportOptions& o = m_importOpts;
     ImGui::Combo("読み込みモード", &m_importMode, "シーンを置き換え\0現在のシーンに追加\0アニメーションのみ (名前で対応付け)\0");
     ImGui::Combo("ドラッグ&ドロップ時", &m_dropMode, "シーンを置き換え\0現在のシーンに追加\0アニメーションのみ\0自動 (空なら開く / あれば追加)\0");
@@ -329,13 +342,23 @@ void Editor::DrawImportWindow() {
 
 void Editor::DrawExportWindow() {
     ImGui::SetNextWindowSize(ImVec2(480, 560), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("エクスポート###ExportSettings", &m_panels.exportWin)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_EXPORT, "エクスポート", "ExportSettings").c_str(), &m_panels.exportWin)) { ImGui::End(); return; }
     ExportOptions& o = m_exportOpts;
     int fmt = (int)o.format;
     if (ImGui::BeginCombo("形式", ExportFormatName(o.format))) {
         for (int i = 0; i < (int)ExportFormat::Count; ++i)
             if (ImGui::Selectable(ExportFormatName((ExportFormat)i), fmt == i)) o.format = (ExportFormat)i;
         ImGui::EndCombo();
+    }
+    ImGui::Combo("書き出す内容", &o.content, "全部 (モデル + アニメーション)\0モデルだけ (アニメーションなし)\0アニメーションだけ (骨格 + アニメーション)\0");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("アニメーションだけ: メッシュ・マテリアル・テクスチャを除き、骨格とモーションだけを書き出します");
+    if (m_scene.roots.size() > 1) {
+        ImGui::Combo("書き出す範囲", &m_exportScope, "選んでいるモデルだけ\0シーン全体 (全モデル)\0");
+        int model = ActiveModel();
+        if (m_exportScope == 0) {
+            if (model >= 0) ImGui::TextDisabled("対象: %s", m_scene.nodes[model].name.c_str());
+            else ImGui::TextColored(ImVec4(1, 0.75f, 0.3f, 1), "モデルが選ばれていないので、シーン全体を書き出します");
+        }
     }
     bool gltf = o.format == ExportFormat::GLB || o.format == ExportFormat::GLTF || o.format == ExportFormat::GLTF_Embedded;
     bool fbx = o.format == ExportFormat::FBX || o.format == ExportFormat::FBX_ASCII;
@@ -379,7 +402,16 @@ void Editor::DrawExportWindow() {
     }
     if (o.format == ExportFormat::GLTF || (fbx && !o.embedTexturesFBX) || o.format == ExportFormat::OBJ || o.format == ExportFormat::DAE) {
         ImGui::Checkbox("テクスチャを出力先にコピー", &o.copyTextures);
-        ImGui::InputTextWithHint("サブフォルダ", "例: textures (空なら同じ場所)", &o.textureSubdir);
+        ImGui::Combo("テクスチャのフォルダ", &o.textureFolderMode, "モデル名 + Texture (おすすめ)\0自分で指定\0");
+        if (o.textureFolderMode == 0) {
+            std::string stem = !m_lastExportPath.empty() ? FileUtil::Stem(m_lastExportPath) : !m_currentPath.empty() ? FileUtil::Stem(m_currentPath) : "untitled";
+            ImGui::TextDisabled("例: %s → %s/", stem.c_str(), TextureFolderName(stem).c_str());
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("書き出すファイル名に合わせて付けます。\nmy_model → my_model_texture / MyModel → MyModelTexture / myModel → myModelTexture\n"
+                                  "空白入りなどの名前はキャメルケース (my model → myModelTexture) に統一します");
+        } else {
+            ImGui::InputTextWithHint("サブフォルダ", "例: textures (空なら同じ場所)", &o.textureSubdir);
+        }
     }
     if (gltf) {
         ImGui::SeparatorText("glTF");
@@ -412,7 +444,7 @@ void Editor::DrawExportWindow() {
 // ---------------------------------------------------------------------------
 void Editor::DrawBatchRename() {
     ImGui::SetNextWindowSize(ImVec2(420, 380), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("一括リネーム###BatchRename", &m_panels.batchRename)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_WRENCH, "一括リネーム", "BatchRename").c_str(), &m_panels.batchRename)) { ImGui::End(); return; }
     ImGui::InputText("検索", &m_batchFind);
     ImGui::InputText("置換", &m_batchReplace);
     ImGui::InputText("接頭辞", &m_batchPrefix);
@@ -453,12 +485,13 @@ void Editor::DrawBatchRename() {
 // ---------------------------------------------------------------------------
 void Editor::DrawSettings() {
     ImGui::SetNextWindowSize(ImVec2(420, 300), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("環境設定###Settings", &m_panels.settings)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_SETTINGS, "環境設定", "Settings").c_str(), &m_panels.settings)) { ImGui::End(); return; }
     if (ImGui::SliderFloat("UI スケール (再起動で反映)", &m_uiScale, 0.75f, 2.5f)) {}
     int undoMax = (int)m_undo.MaxEntries();
     if (ImGui::SliderInt("Undo の最大数", &undoMax, 1, 200)) m_undo.SetMaxEntries(undoMax);
     ImGui::Checkbox("自動検証", &m_autoValidate);
     ImGui::Checkbox("ビューポートの操作ヘルプを表示", &m_showGizmoHelp);
+    ImGui::Checkbox("パネルの説明を表示 (各パネルの上の青い文字)", &m_showPanelHints);
     ImGui::Checkbox("左ドラッグでカメラ回転 (オフ: Maya と同じく矩形選択)", &m_lmbOrbit);
     ImGui::ColorEdit3("背景色", &m_rs.bgColor.x);
     ImGui::SliderInt("MSAA", &m_rs.msaa, 0, 8);
@@ -470,7 +503,28 @@ void Editor::DrawSettings() {
 
 void Editor::DrawHelp() {
     ImGui::SetNextWindowSize(ImVec2(560, 520), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("操作方法###Help", &m_panels.help)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_HELP, "画面の見かた・操作方法", "Help").c_str(), &m_panels.help)) { ImGui::End(); return; }
+    ImGui::SeparatorText("画面の見かた (Unity / Unreal Engine と同じ配置)");
+    if (ImGui::BeginTable("##guide", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
+        ImGui::TableSetupColumn("場所", ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("下の右 (アニメーションほか)").x + 8);
+        ImGui::TableSetupColumn("内容");
+        auto row = [](const std::string& where, const char* what) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(where.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", what);
+        };
+        row(IconText(ICON_OPEN, "上のツールバー"), "開く・書き出し、元に戻す、編集ツール (選択 / 移動 / 回転 / スケール)、アニメーションの再生、全体表示・定規・ヘルプ");
+        row(IconText(ICON_HIERARCHY, "左: 階層"), "モデルの部品 (ノード) の親子関係。Unity の Hierarchy、Unreal の Outliner にあたります");
+        row(IconText(ICON_VIEWPORT, "中央: ビューポート"), "3D 表示。左上で表示モード・ワイヤー・テクスチャ・ボーンなどの見せ方を切り替えます");
+        row(IconText(ICON_INSPECTOR, "右: インスペクター"), "選んだものの詳細 (位置・回転・スケール、メッシュ、スキン)。Unreal の Details にあたります。同じ場所に「単位 / 定規」「シーン情報」のタブがあります");
+        row(IconText(ICON_MESH, "下の左: アセット"), "メッシュ・マテリアル・テクスチャ・スケルトン。Unity の Project にあたります");
+        row(IconText(ICON_ANIMATION, "下の右"), "アニメーション、検証 (問題の一覧)、モデル診断、コンソール (ログ)、履歴");
+        row(IconText(ICON_INFO, "一番下: ステータスバー"), "開いているファイル、選択中のもの、三角形と頂点の数、エラー / 警告の数 (クリックで検証パネル)");
+        ImGui::EndTable();
+    }
+    ImGui::TextDisabled("ボタンやパネルの名前にマウスを乗せると説明が出ます。配置が崩れたら上のツールバーの「配置」ボタンで元に戻せます");
     ImGui::SeparatorText("ビューポート");
     ImGui::BulletText("左クリック: 選択 / 左ドラッグ: 矩形選択 (Ctrl: 切替 / Shift: 追加)");
     ImGui::BulletText("Alt+左ドラッグ / 右ドラッグ: 回転 (環境設定で左ドラッグ=回転にも変更可)");
@@ -500,7 +554,7 @@ void Editor::DrawHelp() {
 
 void Editor::DrawDump() {
     ImGui::SetNextWindowSize(ImVec2(640, 560), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("シーンダンプ###Dump", &m_panels.dump)) { ImGui::End(); return; }
+    if (!ImGui::Begin(PanelTitle(ICON_CONSOLE, "シーンダンプ", "Dump").c_str(), &m_panels.dump)) { ImGui::End(); return; }
     if (ImGui::Button("テキストで更新")) m_dumpText = DumpSceneText(m_scene);
     ImGui::SameLine();
     if (ImGui::Button("JSON で更新")) m_dumpText = DumpSceneJson(m_scene);
